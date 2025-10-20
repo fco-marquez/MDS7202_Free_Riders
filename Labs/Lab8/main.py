@@ -4,8 +4,9 @@ from pydantic import BaseModel
 import pickle
 import numpy as np
 import uvicorn
+import pandas as pd
 
-with open("models/best_xgboost.pkl", "rb") as f:
+with open("models/best_xgboost_pipeline.pkl", "rb") as f:
     model = pickle.load(f)
 
 app = FastAPI(
@@ -34,24 +35,23 @@ def home():
 
 @app.post("/potabilidad/")
 def predict_potabilidad(medicion: WaterMeasurement):
-    features = np.array([[
-        medicion.ph,
-        medicion.Hardness,
-        medicion.Solids,
-        medicion.Chloramines,
-        medicion.Sulfate,
-        medicion.Conductivity,
-        medicion.Organic_carbon,
-        medicion.Trihalomethanes,
-        medicion.Turbidity
-    ]])
+    data = {
+        "ph": [medicion.ph],
+        "Hardness": [medicion.Hardness],
+        "Solids": [medicion.Solids],
+        "Chloramines": [medicion.Chloramines],
+        "Sulfate": [medicion.Sulfate],
+        "Conductivity": [medicion.Conductivity],
+        "Organic_carbon": [medicion.Organic_carbon],
+        "Trihalomethanes": [medicion.Trihalomethanes],
+        "Turbidity": [medicion.Turbidity],
+    }
 
-    # Hacer la predicción
-    # TODO: tenemos que revisar que el modelo guardado en verdad sea el pipeline completo, 
-    # para que la data que recibimos acá sea automáticamente transformada al hacer predict.
-    pred = model.predict(features)[0]
+    features_df = pd.DataFrame(data)
+
+    pred = model.predict(features_df)[0]
 
     return {"potabilidad": int(pred)}
 
 if __name__ == '__main__':
-    uvicorn.run('fastapi_app:app', port = 8000)
+    uvicorn.run('main:app', port = 8000)
