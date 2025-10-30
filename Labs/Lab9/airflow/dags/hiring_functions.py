@@ -13,14 +13,14 @@ from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder, StandardScaler
 
 
 def create_folders(ds, **kwargs):
-    base_path = f"/{ds}"
+    base_path = f"/root/airflow/{ds}"
     os.makedirs(f"{base_path}/raw", exist_ok=True)
     os.makedirs(f"{base_path}/splits", exist_ok=True)
     os.makedirs(f"{base_path}/models", exist_ok=True)
 
 
 def split_data(ds, **kwargs):
-    base_path = f"/{ds}"
+    base_path = f"/root/airflow/{ds}"
     # Leer archivo data_1.csv desde la carpeta raw
     df = pd.read_csv(f"{base_path}/raw/data_1.csv")
     # Dividir los datos en conjuntos de entrenamiento y prueba (80% - 20%)
@@ -33,7 +33,7 @@ def split_data(ds, **kwargs):
 
 
 def preprocess_and_train(ds, **kwargs):
-    base_path = f"/{ds}"
+    base_path = f"/root/airflow/{ds}"
     # Leer los conjuntos de entrenamiento y prueba desde la carpeta splits
     train_df = pd.read_csv(f"{base_path}/splits/train.csv")
     test_df = pd.read_csv(f"{base_path}/splits/test.csv")
@@ -91,7 +91,7 @@ def preprocess_and_train(ds, **kwargs):
     print(f"F1-Score (clase positiva - Contratado): {f1:.4f}")
 
     # Guardar el pipeline entrenado como archivo joblib
-    model_path = f"{ds}/models/hiring_model.joblib"
+    model_path = f"/root/airflow/{ds}/models/hiring_model.joblib"
     joblib.dump(pipeline, model_path)
     print(f"Modelo guardado en: {model_path}")
 
@@ -109,7 +109,7 @@ def predict(file, model_path):
 
 def gradio_interface(ds, **kwargs):
 
-    model_path = f"/{ds}/models/hiring_model.joblib"
+    model_path = f"/root/airflow/{ds}/models/hiring_model.joblib"
 
     interface = gr.Interface(
         fn=lambda file: predict(file, model_path),
@@ -118,4 +118,4 @@ def gradio_interface(ds, **kwargs):
         title="Hiring Decision Prediction",
         description="Sube un archivo JSON con las características de entrada para predecir si Vale será contratada o no.",
     )
-    interface.launch(share=True)
+    interface.launch(share=True, server_name="0.0.0.0", server_port=7860)
