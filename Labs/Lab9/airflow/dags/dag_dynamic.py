@@ -39,14 +39,15 @@ with DAG(
         op_kwargs={"ds": "{{ ds }}"},
     )
 
-    # Branching: Antes del 1-11-2024 descragar solo data_1.csv, despues ambas
+    # Branching: Antes del 1-11-2024 descargar solo data_1.csv, despues ambas
     branch_task = BranchPythonOperator(
         task_id="branch_task",
-        python_callable=lambda: (
+        python_callable=lambda **kwargs: (
             "download_dataset_1"
-            if "{{ ds }}" < "2024-11-01"
+            if kwargs['execution_date'] < dt.datetime(2024, 11, 1, tzinfo=kwargs['execution_date'].tzinfo)
             else ["download_dataset_1", "download_dataset_2"]
         ),
+        provide_context=True,
     )
 
     # Task 3a - Descargar dataset 1
