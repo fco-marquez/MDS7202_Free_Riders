@@ -188,6 +188,7 @@ class GeoClusterer(BaseEstimator, TransformerMixin):
 
 
 def create_pipeline():
+    # TODO: Agregar las transformaciones a las columans zone_id y region_id
     numerical_features = [
         "size",
         "num_deliver_per_week",
