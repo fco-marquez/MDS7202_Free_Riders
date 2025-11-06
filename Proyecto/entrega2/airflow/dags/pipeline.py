@@ -18,15 +18,37 @@ def load_final_data(file_path: str) -> pd.DataFrame:
     return df
 
 
-def split_data(df: pd.DataFrame):
-    """Split the DataFrame into training, validation and testing sets."""
+def split_data(
+    df: pd.DataFrame,
+    output_dir: str = None,
+    train_ratio: float = 0.70,
+    val_ratio: float = 0.15
+):
+    """
+    Split the DataFrame into training, validation and testing sets.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Input data with 'week' column
+    output_dir : str, optional
+        Directory to save split data
+    train_ratio : float
+        Proportion of data for training (default 0.70)
+    val_ratio : float
+        Proportion of data for validation (default 0.15)
+
+    Returns
+    -------
+    tuple
+        (train_data, val_data, test_data)
+    """
     # Ordenar datos por fecha para respetar temporalidad
     df_temporal = df.sort_values("week").copy()
 
     # Definir puntos de corte temporal
-    # 70% train, 15% validation, 15% test
-    train_end = df_temporal["week"].quantile(0.70)
-    val_end = df_temporal["week"].quantile(0.85)
+    train_end = df_temporal["week"].quantile(train_ratio)
+    val_end = df_temporal["week"].quantile(train_ratio + val_ratio)
 
     # Separar los conjuntos basados en tiempo
     train_data = df_temporal[df_temporal["week"] <= train_end]
@@ -47,15 +69,23 @@ def split_data(df: pd.DataFrame):
     )
 
     # Save the data
-    train_data.to_parquet(
-        "Proyecto/entrega2/airflow/data/processed/train_data.parquet", index=False
-    )
-    val_data.to_parquet(
-        "Proyecto/entrega2/airflow/data/processed/val_data.parquet", index=False
-    )
-    test_data.to_parquet(
-        "Proyecto/entrega2/airflow/data/processed/test_data.parquet", index=False
-    )
+    if output_dir is None:
+        output_dir = "Proyecto/entrega2/airflow/data/processed"
+
+    import os
+    os.makedirs(output_dir, exist_ok=True)
+
+    train_path = os.path.join(output_dir, "train_data.parquet")
+    val_path = os.path.join(output_dir, "val_data.parquet")
+    test_path = os.path.join(output_dir, "test_data.parquet")
+
+    train_data.to_parquet(train_path, index=False)
+    val_data.to_parquet(val_path, index=False)
+    test_data.to_parquet(test_path, index=False)
+
+    print(f"\nSaved splits to: {output_dir}")
+
+    return train_data, val_data, test_data
 
 
 def create_advanced_features(X: pd.DataFrame, y: pd.Series = None) -> pd.DataFrame:
@@ -245,12 +275,46 @@ def create_pipeline():
     return feature_engineering_pipeline
 
 
+def run_data_splitting(
+    input_data_path: str,
+    output_dir: str = None
+) -> tuple:
+    """
+    Run data splitting pipeline (for Airflow task).
+
+    Parameters
+    ----------
+    input_data_path : str
+        Path to processed data parquet
+    output_dir : str, optional
+        Directory to save split data
+
+    Returns
+    -------
+    tuple
+        (train_data, val_data, test_data)
+    """
+    print("=" * 60)
+    print("DATA SPLITTING PIPELINE")
+    print("=" * 60)
+
+    data = load_final_data(input_data_path)
+    train_data, val_data, test_data = split_data(data, output_dir=output_dir)
+
+    print("\n" + "=" * 60)
+    print("DATA SPLITTING COMPLETED")
+    print("=" * 60)
+
+    return train_data, val_data, test_data
+
+
 if __name__ == "__main__":
-    data = load_final_data(
-        "Proyecto/entrega2/airflow/data/processed/final_data.parquet"
-    )
-    split_data(data)
-    print("Data splitting completed.")
+    input_path = "Proyecto/entrega2/airflow/data/processed/final_data.parquet"
+    output_dir = "Proyecto/entrega2/airflow/data/processed"
+
+    run_data_splitting(input_path, output_dir)
+
+    print("\nCreating pipeline...")
     pipeline = create_pipeline()
     print("Pipeline created.")
     print(pipeline)

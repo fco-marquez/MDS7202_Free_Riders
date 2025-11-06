@@ -79,7 +79,7 @@ def create_week_and_objective(dfs: Dict[str, pd.DataFrame]) -> Dict[str, pd.Data
     return dfs
 
 
-def join_data(dfs: Dict[str, pd.DataFrame]):
+def join_data(dfs: Dict[str, pd.DataFrame], output_path: str = None):
     """Join transactions products and customers DataFrames."""
     transactions_df = dfs.get("transacciones.parquet")
     products_df = dfs.get("productos.parquet")
@@ -118,17 +118,69 @@ def join_data(dfs: Dict[str, pd.DataFrame]):
     data["bought"] = data["bought"].fillna(0).astype("int8")
 
     # Save parquet file
-    output_dir = "Proyecto/entrega2/airflow/data/processed"
-    os.makedirs(output_dir, exist_ok=True)
-    data.to_parquet(f"{output_dir}/final_data.parquet", index=False)
+    if output_path is None:
+        output_path = "Proyecto/entrega2/airflow/data/processed/final_data.parquet"
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    data.to_parquet(output_path, index=False)
+    print(f"Saved processed data to: {output_path}")
+
+    return data
+
+
+def run_preprocessing_pipeline(
+    raw_data_folder: str,
+    output_data_path: str = None
+) -> pd.DataFrame:
+    """
+    Run complete preprocessing pipeline (for Airflow task).
+
+    Parameters
+    ----------
+    raw_data_folder : str
+        Path to folder containing raw parquet files
+    output_data_path : str, optional
+        Path to save processed data
+
+    Returns
+    -------
+    pd.DataFrame
+        Processed data
+    """
+    print("=" * 60)
+    print("DATA PREPROCESSING PIPELINE")
+    print("=" * 60)
+    print(f"Loading data from: {raw_data_folder}")
+
+    # Load data
+    data_frames = load_data(raw_data_folder)
+
+    # Preprocess transactions
+    print("\nPreprocessing transactions...")
+    data_frames["transacciones.parquet"] = preprocess_transactions(
+        data_frames["transacciones.parquet"]
+    )
+
+    # Optimize datatypes
+    print("\nOptimizing datatypes...")
+    data_frames = optimize_dataframes(data_frames)
+
+    # Create week and objective
+    print("\nCreating week and objective variables...")
+    data_frames = create_week_and_objective(data_frames)
+
+    # Join data
+    print("\nJoining data and creating universe...")
+    final_data = join_data(data_frames, output_path=output_data_path)
+
+    print("\n" + "=" * 60)
+    print("PREPROCESSING COMPLETED")
+    print("=" * 60)
+
+    return final_data
 
 
 if __name__ == "__main__":
     folder_path = "Proyecto/entrega2/airflow/data/raw"
-    data_frames = load_data(folder_path)
-    data_frames["transacciones.parquet"] = preprocess_transactions(
-        data_frames["transacciones.parquet"]
-    )
-    data_frames = optimize_dataframes(data_frames)
-    data_frames = create_week_and_objective(data_frames)
-    join_data(data_frames)
+    output_path = "Proyecto/entrega2/airflow/data/processed/final_data.parquet"
+    run_preprocessing_pipeline(folder_path, output_path)
