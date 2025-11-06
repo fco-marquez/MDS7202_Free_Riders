@@ -1,0 +1,16 @@
+services:
+  water-potability-api:
+    build: .
+    container_name: water-potability-api
+    ports:
+      - "8000:8000"
+    volumes:
+      # Persistencia de modelos entrenados
+      - ./models:/app/models
+      # Persistencia de experimentos MLflow
+      - ./mlruns:/app/mlruns
+      # Persistencia de gráficos generados
+      - ./plots:/app/plots
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped

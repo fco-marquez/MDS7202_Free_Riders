@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pkl
+mlruns/
+plots/
+data/
+notebooks/
+.git
+.gitignore
+Dockerfile
+water_potability.csv
