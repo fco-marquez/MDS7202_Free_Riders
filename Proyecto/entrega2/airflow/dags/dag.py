@@ -22,21 +22,20 @@ from airflow import DAG
 from airflow.operators.empty import EmptyOperator
 from airflow.operators.python import BranchPythonOperator, PythonOperator
 from airflow.utils.trigger_rule import TriggerRule
+from drift_detector import run_drift_detection
 
 # Import local modules
 from load_and_preprocess import run_preprocessing_pipeline
 from pipeline import run_data_splitting
-from drift_detector import run_drift_detection
-from train_module import run_full_training
 from predict_module import run_prediction_pipeline
-
+from train_module import run_full_training
 
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
 
 # Base paths
-BASE_DIR = Path(os.getenv('AIRFLOW_HOME', '/opt/airflow'))
+BASE_DIR = Path(os.getenv("AIRFLOW_HOME", "/opt/airflow"))
 RAW_DATA_DIR = BASE_DIR / "data" / "raw"
 PROCESSED_DATA_DIR = BASE_DIR / "data" / "processed"
 PREDICTIONS_DIR = BASE_DIR / "predictions"
@@ -66,6 +65,7 @@ MLFLOW_EXPERIMENT = "sodai_drinks_prediction"
 # ============================================================================
 # TASK FUNCTIONS
 # ============================================================================
+
 
 def extract_new_data(**context):
     """
@@ -103,8 +103,7 @@ def preprocess_data(**context):
     Preprocess raw data: clean, transform, and create universe.
     """
     run_preprocessing_pipeline(
-        raw_data_folder=str(RAW_DATA_DIR),
-        output_data_path=str(FINAL_DATA_PATH)
+        raw_data_folder=str(RAW_DATA_DIR), output_data_path=str(FINAL_DATA_PATH)
     )
 
 
@@ -113,8 +112,7 @@ def split_data(**context):
     Split processed data into train, validation, and test sets.
     """
     run_data_splitting(
-        input_data_path=str(FINAL_DATA_PATH),
-        output_dir=str(PROCESSED_DATA_DIR)
+        input_data_path=str(FINAL_DATA_PATH), output_dir=str(PROCESSED_DATA_DIR)
     )
 
 
@@ -122,17 +120,17 @@ def detect_drift(**context):
     """
     Detect drift in new data compared to reference data.
     """
-    execution_date = context['ds']
+    execution_date = context["ds"]
     drift_report_path = str(DRIFT_REPORT_PATH).format(execution_date=execution_date)
 
     needs_retrain = run_drift_detection(
         reference_data_path=str(TRAIN_DATA_PATH),
         current_data_path=str(FINAL_DATA_PATH),
-        output_report_path=drift_report_path
+        output_report_path=drift_report_path,
     )
 
     # Push result to XCom for branching
-    context['task_instance'].xcom_push(key='needs_retrain', value=needs_retrain)
+    context["task_instance"].xcom_push(key="needs_retrain", value=needs_retrain)
 
     return needs_retrain
 
@@ -141,8 +139,8 @@ def decide_retrain(**context):
     """
     Branching decision: retrain if drift detected OR no model exists, skip otherwise.
     """
-    ti = context['task_instance']
-    needs_retrain = ti.xcom_pull(task_ids='detect_drift', key='needs_retrain')
+    ti = context["task_instance"]
+    needs_retrain = ti.xcom_pull(task_ids="detect_drift", key="needs_retrain")
 
     # Check if model exists
     model_exists = MODEL_PATH.exists()
@@ -161,11 +159,11 @@ def decide_retrain(**context):
             print("→ Reason: Drift detected")
         print("→ Decision: RETRAIN MODEL")
         print("=" * 60)
-        return 'train_model'
+        return "train_model"
     else:
         print("→ Decision: SKIP RETRAINING")
         print("=" * 60)
-        return 'skip_retrain'
+        return "skip_retrain"
 
 
 def train_model(**context):
@@ -176,17 +174,17 @@ def train_model(**context):
         train_data_path=str(TRAIN_DATA_PATH),
         val_data_path=str(VAL_DATA_PATH),
         n_trials=N_OPTUNA_TRIALS,
-        output_model_path=str(MODEL_PATH)
+        output_model_path=str(MODEL_PATH),
     )
 
-    print(f"\n✓ Model saved to: {MODEL_PATH}")
+    print(f"\nModel saved to: {MODEL_PATH}")
 
 
 def generate_predictions(**context):
     """
     Generate predictions for next week using the best model.
     """
-    execution_date = context['ds']
+    execution_date = context["ds"]
     predictions_path = str(PREDICTIONS_PATH).format(execution_date=execution_date)
 
     predictions = run_prediction_pipeline(
@@ -195,7 +193,7 @@ def generate_predictions(**context):
         historical_data_path=str(FINAL_DATA_PATH),
         model_experiment_name=MLFLOW_EXPERIMENT,
         model_fallback_path=str(MODEL_PATH),
-        output_predictions_path=predictions_path
+        output_predictions_path=predictions_path,
     )
 
     print(f"\n✓ Predictions saved to: {predictions_path}")
@@ -207,22 +205,22 @@ def generate_predictions(**context):
 # ============================================================================
 
 default_args = {
-    'owner': 'free-riders',
-    'depends_on_past': False,
-    'email_on_failure': False,
-    'email_on_retry': False,
-    'retries': 1,
-    'retry_delay': dt.timedelta(minutes=5),
+    "owner": "free-riders",
+    "depends_on_past": False,
+    "email_on_failure": False,
+    "email_on_retry": False,
+    "retries": 1,
+    "retry_delay": dt.timedelta(minutes=5),
 }
 
 with DAG(
-    dag_id='sodai_prediction_pipeline',
+    dag_id="sodai_prediction_pipeline",
     default_args=default_args,
-    description='Complete ML pipeline for SodAI drinks prediction with drift detection',
+    description="Complete ML pipeline for SodAI drinks prediction with drift detection",
     schedule_interval=None,  # Manual trigger (in production: '@weekly' or cron schedule)
     start_date=dt.datetime(2024, 1, 1),
     catchup=False,
-    tags=['ml', 'prediction', 'drinks', 'mlflow', 'optuna'],
+    tags=["ml", "prediction", "drinks", "mlflow", "optuna"],
 ) as dag:
 
     # ========================================================================
@@ -230,25 +228,25 @@ with DAG(
     # ========================================================================
 
     start = EmptyOperator(
-        task_id='start',
+        task_id="start",
         doc_md="""
         ### Pipeline Start
         Begins the SodAI drinks prediction pipeline.
-        """
+        """,
     )
 
     extract = PythonOperator(
-        task_id='extract_new_data',
+        task_id="extract_new_data",
         python_callable=extract_new_data,
         doc_md="""
         ### Extract New Data
         Checks for and validates new raw data files.
         In production, this would fetch data from external sources.
-        """
+        """,
     )
 
     preprocess = PythonOperator(
-        task_id='preprocess_data',
+        task_id="preprocess_data",
         python_callable=preprocess_data,
         doc_md="""
         ### Preprocess Data
@@ -257,21 +255,21 @@ with DAG(
         - Optimizes datatypes
         - Creates week and objective variables
         - Generates customer-product-week universe
-        """
+        """,
     )
 
     split = PythonOperator(
-        task_id='split_data',
+        task_id="split_data",
         python_callable=split_data,
         doc_md="""
         ### Split Data
         Splits processed data into train (70%), validation (15%), and test (15%) sets.
         Respects temporal ordering to prevent data leakage.
-        """
+        """,
     )
 
     drift_detection = PythonOperator(
-        task_id='detect_drift',
+        task_id="detect_drift",
         python_callable=detect_drift,
         doc_md="""
         ### Detect Drift
@@ -280,22 +278,22 @@ with DAG(
         - Chi-square test for categorical features
         - Generates drift report
         - Determines if retraining is needed
-        """
+        """,
     )
 
     branch = BranchPythonOperator(
-        task_id='decide_retrain',
+        task_id="decide_retrain",
         python_callable=decide_retrain,
         doc_md="""
         ### Branching Decision
         Decides whether to retrain the model based on drift detection results.
         - If drift detected → train_model
         - If no drift → skip_retrain
-        """
+        """,
     )
 
     train = PythonOperator(
-        task_id='train_model',
+        task_id="train_model",
         python_callable=train_model,
         doc_md="""
         ### Train Model
@@ -305,20 +303,20 @@ with DAG(
         3. Track experiments with MLflow
         4. Generate SHAP interpretability plots
         5. Save model to MLflow and locally
-        """
+        """,
     )
 
     skip = EmptyOperator(
-        task_id='skip_retrain',
+        task_id="skip_retrain",
         doc_md="""
         ### Skip Retraining
         Placeholder task when no drift is detected.
         Uses existing model for predictions.
-        """
+        """,
     )
 
     predict = PythonOperator(
-        task_id='generate_predictions',
+        task_id="generate_predictions",
         python_callable=generate_predictions,
         trigger_rule=TriggerRule.NONE_FAILED,  # Execute even if one branch was skipped
         doc_md="""
@@ -329,16 +327,16 @@ with DAG(
         - Applies feature engineering
         - Generates predictions with probabilities
         - Saves results
-        """
+        """,
     )
 
     end = EmptyOperator(
-        task_id='end',
+        task_id="end",
         trigger_rule=TriggerRule.NONE_FAILED,
         doc_md="""
         ### Pipeline End
         Marks successful completion of the pipeline.
-        """
+        """,
     )
 
     # ========================================================================

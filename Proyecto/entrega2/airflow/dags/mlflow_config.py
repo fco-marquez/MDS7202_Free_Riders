@@ -5,17 +5,14 @@ Centralizes MLflow configuration and helper functions for experiment tracking.
 """
 
 import os
-import mlflow
 from pathlib import Path
 from typing import Any, Dict, Optional
-import matplotlib.pyplot as plt
 
+import matplotlib.pyplot as plt
+import mlflow
 
 # Configuration
-MLFLOW_TRACKING_URI = os.getenv(
-    "MLFLOW_TRACKING_URI",
-    "file:///C:/Users/fmarq/DCC/MDS/MDS7202_Laboratorio/MDS7202_Free_Riders/Proyecto/entrega2/airflow/mlruns"
-)
+MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
 EXPERIMENT_NAME_BASE = "sodai_drinks_prediction"
 
 
@@ -114,7 +111,7 @@ def log_dict_as_artifact(data: Dict[str, Any], filename: str):
     import json
     import tempfile
 
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         json.dump(data, f, indent=2)
         temp_path = f.name
 
@@ -122,7 +119,9 @@ def log_dict_as_artifact(data: Dict[str, Any], filename: str):
     os.unlink(temp_path)
 
 
-def get_best_run_from_experiment(experiment_name: str, metric: str = "val_recall") -> Optional[mlflow.entities.Run]:
+def get_best_run_from_experiment(
+    experiment_name: str, metric: str = "val_recall"
+) -> Optional[mlflow.entities.Run]:
     """
     Get the best run from an experiment based on a metric.
 
@@ -148,14 +147,14 @@ def get_best_run_from_experiment(experiment_name: str, metric: str = "val_recall
     runs = mlflow.search_runs(
         experiment_ids=[experiment.experiment_id],
         order_by=[f"metrics.{metric} DESC"],
-        max_results=1
+        max_results=1,
     )
 
     if len(runs) == 0:
         print(f"No runs found in experiment {experiment_name}")
         return None
 
-    run_id = runs.iloc[0]['run_id']
+    run_id = runs.iloc[0]["run_id"]
     return mlflow.get_run(run_id)
 
 

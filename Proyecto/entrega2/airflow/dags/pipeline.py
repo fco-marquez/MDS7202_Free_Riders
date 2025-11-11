@@ -22,7 +22,7 @@ def split_data(
     df: pd.DataFrame,
     output_dir: str = None,
     train_ratio: float = 0.70,
-    val_ratio: float = 0.15
+    val_ratio: float = 0.15,
 ):
     """
     Split the DataFrame into training, validation and testing sets.
@@ -73,6 +73,7 @@ def split_data(
         output_dir = "Proyecto/entrega2/airflow/data/processed"
 
     import os
+
     os.makedirs(output_dir, exist_ok=True)
 
     train_path = os.path.join(output_dir, "train_data.parquet")
@@ -236,6 +237,8 @@ def create_pipeline():
         "package",
         "cluster",
         "product_id",
+        "zone_id",
+        "region_id",
     ]
 
     numerical_pipeline = Pipeline(
@@ -275,10 +278,7 @@ def create_pipeline():
     return feature_engineering_pipeline
 
 
-def run_data_splitting(
-    input_data_path: str,
-    output_dir: str = None
-) -> tuple:
+def run_data_splitting(input_data_path: str, output_dir: str = None) -> tuple:
     """
     Run data splitting pipeline (for Airflow task).
 

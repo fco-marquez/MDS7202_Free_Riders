@@ -85,6 +85,23 @@ def join_data(dfs: Dict[str, pd.DataFrame], output_path: str = None):
     products_df = dfs.get("productos.parquet")
     customers_df = dfs.get("clientes.parquet")
 
+    # Filtramos clientes activos
+    customers_with_transactions = transactions_df["customer_id"].unique()
+    customers_df = customers_df[
+        customers_df["customer_id"].isin(customers_with_transactions)
+    ]
+
+    # Filtramos productos activos
+    products_with_transactions = transactions_df["product_id"].unique()
+    products_df = products_df[
+        products_df["product_id"].isin(products_with_transactions)
+    ]
+
+    customers_df["customer_id"] = customers_df["customer_id"].astype(str)
+    products_df["product_id"] = products_df["product_id"].astype(str)
+    transactions_df["customer_id"] = transactions_df["customer_id"].astype(str)
+    transactions_df["product_id"] = transactions_df["product_id"].astype(str)
+    transactions_df["order_id"] = transactions_df["order_id"].astype(str)
     for frame, cols in [
         (customers_df, ["customer_id", "customer_type"]),
         (
@@ -116,6 +133,7 @@ def join_data(dfs: Dict[str, pd.DataFrame], output_path: str = None):
     )
 
     data["bought"] = data["bought"].fillna(0).astype("int8")
+    data.drop(columns=["order_id", "purchase_date", "items"], inplace=True)
 
     # Save parquet file
     if output_path is None:
@@ -129,8 +147,7 @@ def join_data(dfs: Dict[str, pd.DataFrame], output_path: str = None):
 
 
 def run_preprocessing_pipeline(
-    raw_data_folder: str,
-    output_data_path: str = None
+    raw_data_folder: str, output_data_path: str = None
 ) -> pd.DataFrame:
     """
     Run complete preprocessing pipeline (for Airflow task).
