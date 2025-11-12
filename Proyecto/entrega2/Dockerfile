@@ -30,7 +30,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
 # Copy DAGs and modules
-COPY --chown=airflow:root ./dags /opt/airflow/dags
+COPY --chown=airflow:root ./airflow/dags /opt/airflow/dags
 
 # Copy utility scripts
 COPY --chown=airflow:root generate_test_data.py /opt/airflow/

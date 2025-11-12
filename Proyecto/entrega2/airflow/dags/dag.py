@@ -18,7 +18,6 @@ import datetime as dt
 import os
 from pathlib import Path
 
-from airflow import DAG
 from airflow.operators.empty import EmptyOperator
 from airflow.operators.python import BranchPythonOperator, PythonOperator
 from airflow.utils.trigger_rule import TriggerRule
@@ -29,6 +28,8 @@ from load_and_preprocess import run_preprocessing_pipeline
 from pipeline import run_data_splitting
 from predict_module import run_prediction_pipeline
 from train_module import run_full_training
+
+from airflow import DAG
 
 # ============================================================================
 # CONFIGURATION
@@ -50,16 +51,16 @@ for directory in [PROCESSED_DATA_DIR, PREDICTIONS_DIR, DRIFT_REPORTS_DIR, MODELS
 FINAL_DATA_PATH = PROCESSED_DATA_DIR / "final_data.parquet"
 TRAIN_DATA_PATH = PROCESSED_DATA_DIR / "train_data.parquet"
 VAL_DATA_PATH = PROCESSED_DATA_DIR / "val_data.parquet"
-TEST_DATA_PATH = PROCESSED_DATA_DIR / "test_data.parquet"
 CUSTOMERS_PATH = RAW_DATA_DIR / "clientes.parquet"
 PRODUCTS_PATH = RAW_DATA_DIR / "productos.parquet"
 DRIFT_REPORT_PATH = DRIFT_REPORTS_DIR / "drift_report_{execution_date}.json"
 MODEL_PATH = MODELS_DIR / "best_model.pkl"
 PREDICTIONS_PATH = PREDICTIONS_DIR / "predictions_{execution_date}.parquet"
 
-# Training configuration
-N_OPTUNA_TRIALS = 50  # Number of hyperparameter optimization trials
-MLFLOW_EXPERIMENT = "sodai_drinks_prediction"
+# Training configuration from environment variables
+N_OPTUNA_TRIALS = int(os.getenv("N_OPTUNA_TRIALS", "50"))
+MLFLOW_EXPERIMENT = os.getenv("MLFLOW_EXPERIMENT_NAME", "sodai_drinks_prediction")
+DRIFT_THRESHOLD = float(os.getenv("DRIFT_THRESHOLD", "0.3"))
 
 
 # ============================================================================
@@ -183,6 +184,9 @@ def train_model(**context):
 def generate_predictions(**context):
     """
     Generate predictions for next week using the best model.
+
+    Creates universe for the week AFTER the most recent week in historical data.
+    This follows the requirement: "predict for the week following the most recent in the data"
     """
     execution_date = context["ds"]
     predictions_path = str(PREDICTIONS_PATH).format(execution_date=execution_date)
@@ -263,8 +267,11 @@ with DAG(
         python_callable=split_data,
         doc_md="""
         ### Split Data
-        Splits processed data into train (70%), validation (15%), and test (15%) sets.
+        Splits processed data into train (80%) and validation (20%) sets.
         Respects temporal ordering to prevent data leakage.
+        
+        NO test set is created - predictions will be made for the NEXT WEEK
+        after the most recent data, following project requirements.
         """,
     )
 
@@ -321,12 +328,15 @@ with DAG(
         trigger_rule=TriggerRule.NONE_FAILED,  # Execute even if one branch was skipped
         doc_md="""
         ### Generate Predictions
-        Generates predictions for the next week:
+        Generates predictions for the NEXT WEEK after the most recent data:
         - Loads best model (from MLflow or local)
-        - Creates customer-product universe for next week
-        - Applies feature engineering
+        - Gets latest week from historical data
+        - Creates customer-product universe for week N+1
+        - Applies feature engineering pipeline
         - Generates predictions with probabilities
         - Saves results
+        
+        This follows the requirement: "predict for the week following the most recent in the data"
         """,
     )
 
@@ -387,11 +397,12 @@ Raw Data → Preprocessing → Train/Val/Test Split → Drift Detection
 ```
 
 ## Configuration
-- **Training ratio**: 70% train, 15% validation, 15% test
+- **Training ratio**: 80% train, 20% validation (no test set)
 - **Optuna trials**: 50
 - **Model**: XGBoost with class balancing
 - **Primary metric**: Recall (detect purchases)
 - **Drift threshold**: 30% of features showing drift
+- **Predictions**: For week N+1 (where N = latest week in data)
 
 ## Outputs
 - **Processed data**: `data/processed/`

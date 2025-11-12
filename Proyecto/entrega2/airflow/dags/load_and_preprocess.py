@@ -137,7 +137,7 @@ def join_data(dfs: Dict[str, pd.DataFrame], output_path: str = None):
 
     # Save parquet file
     if output_path is None:
-        output_path = "Proyecto/entrega2/airflow/data/processed/final_data.parquet"
+        raise ValueError("output_path must be specified")
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     data.to_parquet(output_path, index=False)

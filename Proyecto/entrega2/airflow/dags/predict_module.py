@@ -4,20 +4,18 @@ Prediction Module
 Generates predictions for the next week using the best trained model.
 """
 
-import pandas as pd
-import numpy as np
-from pathlib import Path
 from datetime import datetime
-import joblib
+from pathlib import Path
 from typing import Optional, Tuple
+
+import joblib
 import mlflow
-from mlflow_config import load_model_from_mlflow, get_experiment_name, setup_mlflow
+import numpy as np
+import pandas as pd
+from mlflow_config import get_experiment_name, load_model_from_mlflow, setup_mlflow
 
 
-def load_best_model(
-    experiment_name: str = None,
-    fallback_model_path: str = None
-):
+def load_best_model(experiment_name: str = None, fallback_model_path: str = None):
     """
     Load the best model from MLflow or fallback to local file.
 
@@ -79,18 +77,16 @@ def get_latest_week(df: pd.DataFrame) -> int:
     int
         Latest week number
     """
-    if 'week' not in df.columns:
+    if "week" not in df.columns:
         raise ValueError("Data must contain 'week' column")
 
-    latest_week = df['week'].max()
+    latest_week = df["week"].max()
     print(f"Latest week in data: {latest_week}")
     return latest_week
 
 
 def create_next_week_universe(
-    customers_df: pd.DataFrame,
-    products_df: pd.DataFrame,
-    latest_week: int
+    customers_df: pd.DataFrame, products_df: pd.DataFrame, latest_week: int
 ) -> pd.DataFrame:
     """
     Create universe of all customer-product combinations for next week.
@@ -116,14 +112,41 @@ def create_next_week_universe(
     next_week = latest_week + 1
     print(f"Generating universe for week: {next_week}")
 
+    print(f"\nCustomers columns: {customers_df.columns.tolist()}")
+    print(f"Products columns: {products_df.columns.tolist()}")
+
     # Create cartesian product
-    customers_df['key'] = 1
-    products_df['key'] = 1
+    customers_copy = customers_df.copy()
+    products_copy = products_df.copy()
 
-    universe = customers_df.merge(products_df, on='key').drop(columns=['key'])
-    universe['week'] = next_week
+    customers_copy["key"] = 1
+    products_copy["key"] = 1
 
-    print(f"Universe size: {len(universe):,} customer-product pairs")
+    universe = customers_copy.merge(products_copy, on="key", how="outer").drop(
+        columns=["key"]
+    )
+    universe["week"] = next_week
+
+    # Verify critical columns exist
+    print(f"\nUniverse columns after merge: {universe.columns.tolist()}")
+
+    # Check for NaN in geographic coordinates
+    if "X" in universe.columns and "Y" in universe.columns:
+        nan_x = universe["X"].isna().sum()
+        nan_y = universe["Y"].isna().sum()
+        if nan_x > 0 or nan_y > 0:
+            print(f"WARNING: Found {nan_x} NaN values in 'X' and {nan_y} in 'Y'")
+            print("Filling NaN geographic coordinates with median values...")
+            universe["X"].fillna(universe["X"].median(), inplace=True)
+            universe["Y"].fillna(universe["Y"].median(), inplace=True)
+    else:
+        print("ERROR: Columns 'X' and 'Y' not found in universe after merge!")
+        print("This should not happen. Check data files.")
+        raise ValueError(
+            "Geographic coordinates 'X' and 'Y' are required but not found"
+        )
+
+    print(f"\nUniverse size: {len(universe):,} customer-product pairs")
     print(f"Unique customers: {universe['customer_id'].nunique():,}")
     print(f"Unique products: {universe['product_id'].nunique():,}")
 
@@ -132,8 +155,7 @@ def create_next_week_universe(
 
 
 def merge_historical_data_for_features(
-    universe_df: pd.DataFrame,
-    historical_df: pd.DataFrame
+    universe_df: pd.DataFrame, historical_df: pd.DataFrame
 ) -> pd.DataFrame:
     """
     Merge historical data with universe to enable feature engineering.
@@ -162,18 +184,20 @@ def merge_historical_data_for_features(
 
     # Ensure universe has the same columns as historical data
     for col in historical_df.columns:
-        if col not in universe_df.columns and col != 'bought':
+        if col not in universe_df.columns and col != "bought":
             # Fill with placeholder values if column missing
             universe_df[col] = 0
 
     # Add bought column (placeholder, will be predicted)
-    universe_df['bought'] = 0
+    universe_df["bought"] = 0
 
     # Combine historical + universe
     combined = pd.concat([historical_df, universe_df], ignore_index=True)
 
     # Sort by customer_id, product_id, week to ensure proper time ordering
-    combined = combined.sort_values(['customer_id', 'product_id', 'week']).reset_index(drop=True)
+    combined = combined.sort_values(["customer_id", "product_id", "week"]).reset_index(
+        drop=True
+    )
 
     print(f"Combined data size: {len(combined):,} rows")
     print(f"Historical data: {len(historical_df):,} rows")
@@ -184,9 +208,7 @@ def merge_historical_data_for_features(
 
 
 def generate_predictions(
-    model,
-    X_pred: pd.DataFrame,
-    output_path: str = None
+    model, X_pred: pd.DataFrame, output_path: str = None
 ) -> pd.DataFrame:
     """
     Generate predictions using the trained model.
@@ -216,25 +238,33 @@ def generate_predictions(
     y_pred_proba = model.predict_proba(X_pred)[:, 1]
 
     # Create results dataframe
-    predictions = pd.DataFrame({
-        'customer_id': X_pred['customer_id'],
-        'product_id': X_pred['product_id'],
-        'week': X_pred['week'],
-        'prediction': y_pred,
-        'probability': y_pred_proba
-    })
+    predictions = pd.DataFrame(
+        {
+            "customer_id": X_pred["customer_id"],
+            "product_id": X_pred["product_id"],
+            "week": X_pred["week"],
+            "prediction": y_pred,
+            "probability": y_pred_proba,
+        }
+    )
 
     # Summary statistics
     print("\nPrediction Summary:")
     print(f"Total predictions: {len(predictions):,}")
-    print(f"Predicted purchases (1): {(predictions['prediction'] == 1).sum():,} ({(predictions['prediction'] == 1).sum() / len(predictions) * 100:.2f}%)")
-    print(f"Predicted non-purchases (0): {(predictions['prediction'] == 0).sum():,} ({(predictions['prediction'] == 0).sum() / len(predictions) * 100:.2f}%)")
+    print(
+        f"Predicted purchases (1): {(predictions['prediction'] == 1).sum():,} ({(predictions['prediction'] == 1).sum() / len(predictions) * 100:.2f}%)"
+    )
+    print(
+        f"Predicted non-purchases (0): {(predictions['prediction'] == 0).sum():,} ({(predictions['prediction'] == 0).sum() / len(predictions) * 100:.2f}%)"
+    )
     print(f"\nProbability statistics:")
-    print(predictions['probability'].describe())
+    print(predictions["probability"].describe())
 
     # Top predictions
     print("\nTop 10 most likely purchases:")
-    top_predictions = predictions.nlargest(10, 'probability')[['customer_id', 'product_id', 'probability']]
+    top_predictions = predictions.nlargest(10, "probability")[
+        ["customer_id", "product_id", "probability"]
+    ]
     print(top_predictions.to_string(index=False))
 
     # Save predictions
@@ -254,10 +284,13 @@ def run_prediction_pipeline(
     historical_data_path: str,
     model_experiment_name: str = None,
     model_fallback_path: str = None,
-    output_predictions_path: str = None
+    output_predictions_path: str = None,
 ) -> pd.DataFrame:
     """
     Main function to run complete prediction pipeline (for Airflow task).
+
+    Creates universe for the NEXT WEEK after the most recent week in historical data,
+    as per project requirements.
 
     Parameters
     ----------
@@ -287,8 +320,7 @@ def run_prediction_pipeline(
 
     # Load model
     model = load_best_model(
-        experiment_name=model_experiment_name,
-        fallback_model_path=model_fallback_path
+        experiment_name=model_experiment_name, fallback_model_path=model_fallback_path
     )
 
     # Load data
@@ -301,31 +333,17 @@ def run_prediction_pipeline(
     print(f"Products: {len(products_df):,}")
     print(f"Historical data: {len(historical_df):,}")
 
-    # Get latest week
+    # Get latest week from historical data
     latest_week = get_latest_week(historical_df)
 
-    # Create next week universe
-    next_week_universe = create_next_week_universe(
-        customers_df,
-        products_df,
-        latest_week
-    )
-
-    # For prediction, we don't need to merge historical data if the pipeline
-    # handles feature engineering internally. However, if features depend on
-    # historical data (like recency, frequency), we need to provide that context.
-
-    # Since our FeatureEngineer needs historical context, we'll use the next week universe directly
-    # The pipeline's FeatureEngineer will handle the feature creation
-
-    # Keep only necessary columns for prediction
-    X_pred = next_week_universe.copy()
+    # Create universe for NEXT WEEK (latest_week + 1)
+    # This follows the requirement: "predict for the week following the most recent in the data"
+    print(f"\n📅 Creating universe for prediction week: {latest_week + 1}")
+    X_pred = create_next_week_universe(customers_df, products_df, latest_week)
 
     # Generate predictions
     predictions = generate_predictions(
-        model,
-        X_pred,
-        output_path=output_predictions_path
+        model, X_pred, output_path=output_predictions_path
     )
 
     print("\n" + "=" * 80)
@@ -336,8 +354,7 @@ def run_prediction_pipeline(
 
 
 def create_prediction_summary_report(
-    predictions: pd.DataFrame,
-    output_path: str = None
+    predictions: pd.DataFrame, output_path: str = None
 ) -> pd.DataFrame:
     """
     Create a summary report of predictions.
@@ -355,24 +372,26 @@ def create_prediction_summary_report(
         Summary report
     """
     # Summary by customer
-    customer_summary = predictions.groupby('customer_id').agg({
-        'prediction': 'sum',
-        'probability': 'mean'
-    }).reset_index()
-    customer_summary.columns = ['customer_id', 'predicted_purchases', 'avg_probability']
+    customer_summary = (
+        predictions.groupby("customer_id")
+        .agg({"prediction": "sum", "probability": "mean"})
+        .reset_index()
+    )
+    customer_summary.columns = ["customer_id", "predicted_purchases", "avg_probability"]
 
     # Summary by product
-    product_summary = predictions.groupby('product_id').agg({
-        'prediction': 'sum',
-        'probability': 'mean'
-    }).reset_index()
-    product_summary.columns = ['product_id', 'predicted_purchases', 'avg_probability']
+    product_summary = (
+        predictions.groupby("product_id")
+        .agg({"prediction": "sum", "probability": "mean"})
+        .reset_index()
+    )
+    product_summary.columns = ["product_id", "predicted_purchases", "avg_probability"]
 
     # Top customers (most likely to buy)
-    top_customers = customer_summary.nlargest(20, 'predicted_purchases')
+    top_customers = customer_summary.nlargest(20, "predicted_purchases")
 
     # Top products (most likely to be purchased)
-    top_products = product_summary.nlargest(20, 'predicted_purchases')
+    top_products = product_summary.nlargest(20, "predicted_purchases")
 
     print("\nTop 10 Customers (most predicted purchases):")
     print(top_customers.head(10).to_string(index=False))
@@ -383,24 +402,23 @@ def create_prediction_summary_report(
     # Save summary
     if output_path:
         summary = {
-            'customer_summary': customer_summary,
-            'product_summary': product_summary,
-            'top_customers': top_customers,
-            'top_products': top_products
+            "customer_summary": customer_summary,
+            "product_summary": product_summary,
+            "top_customers": top_customers,
+            "top_products": top_products,
         }
 
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-            customer_summary.to_excel(writer, sheet_name='Customer_Summary', index=False)
-            product_summary.to_excel(writer, sheet_name='Product_Summary', index=False)
-            top_customers.to_excel(writer, sheet_name='Top_Customers', index=False)
-            top_products.to_excel(writer, sheet_name='Top_Products', index=False)
+        with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+            customer_summary.to_excel(
+                writer, sheet_name="Customer_Summary", index=False
+            )
+            product_summary.to_excel(writer, sheet_name="Product_Summary", index=False)
+            top_customers.to_excel(writer, sheet_name="Top_Customers", index=False)
+            top_products.to_excel(writer, sheet_name="Top_Products", index=False)
 
         print(f"\nSummary report saved to: {output_path}")
 
-    return {
-        'customer_summary': customer_summary,
-        'product_summary': product_summary
-    }
+    return {"customer_summary": customer_summary, "product_summary": product_summary}

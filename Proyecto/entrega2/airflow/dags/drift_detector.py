@@ -4,13 +4,15 @@ Data Drift Detection Module
 Detects statistical drift in data distributions using KS-test and Chi-square test.
 """
 
-import pandas as pd
-import numpy as np
-from scipy import stats
-from typing import Dict, Tuple, List
 import json
-from pathlib import Path
+import os
 from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Tuple
+
+import numpy as np
+import pandas as pd
+from scipy import stats
 
 
 def convert_to_json_serializable(obj):
@@ -30,34 +32,35 @@ def convert_to_json_serializable(obj):
 
 # Features to monitor for drift
 NUMERICAL_FEATURES = [
-    'size',
-    'num_deliver_per_week',
-    'num_visit_per_week',
-    'items',
-    'recency',
-    'frequency',
-    'customer_product_share',
-    'trend'
+    "size",
+    "num_deliver_per_week",
+    "num_visit_per_week",
+    "items",
+    "recency",
+    "frequency",
+    "customer_product_share",
+    "trend",
 ]
 
 CATEGORICAL_FEATURES = [
-    'customer_type',
-    'brand',
-    'category',
-    'sub_category',
-    'segment',
-    'package'
+    "customer_type",
+    "brand",
+    "category",
+    "sub_category",
+    "segment",
+    "package",
 ]
 
 # Drift thresholds
 KS_THRESHOLD = 0.05  # p-value threshold for KS test
 CHI2_THRESHOLD = 0.05  # p-value threshold for Chi-square test
-DRIFT_THRESHOLD = 0.3  # Proportion of features that can show drift before triggering retrain
+DRIFT_THRESHOLD = float(
+    os.getenv("DRIFT_THRESHOLD", "0.3")
+)  # From environment variable
 
 
 def kolmogorov_smirnov_test(
-    reference_data: pd.Series,
-    current_data: pd.Series
+    reference_data: pd.Series, current_data: pd.Series
 ) -> Tuple[float, float]:
     """
     Perform Kolmogorov-Smirnov test to detect distribution drift.
@@ -88,8 +91,7 @@ def kolmogorov_smirnov_test(
 
 
 def chi_square_test(
-    reference_data: pd.Series,
-    current_data: pd.Series
+    reference_data: pd.Series, current_data: pd.Series
 ) -> Tuple[float, float]:
     """
     Perform Chi-square test to detect categorical drift.
@@ -132,8 +134,7 @@ def chi_square_test(
 
 
 def calculate_drift_statistics(
-    reference_df: pd.DataFrame,
-    current_df: pd.DataFrame
+    reference_df: pd.DataFrame, current_df: pd.DataFrame
 ) -> Dict[str, Dict[str, float]]:
     """
     Calculate drift statistics for all monitored features.
@@ -159,16 +160,15 @@ def calculate_drift_statistics(
             continue
 
         ks_stat, p_value = kolmogorov_smirnov_test(
-            reference_df[feature],
-            current_df[feature]
+            reference_df[feature], current_df[feature]
         )
 
         drift_stats[feature] = {
-            'test': 'kolmogorov_smirnov',
-            'statistic': float(ks_stat),
-            'p_value': float(p_value),
-            'drift_detected': p_value < KS_THRESHOLD,
-            'threshold': KS_THRESHOLD
+            "test": "kolmogorov_smirnov",
+            "statistic": float(ks_stat),
+            "p_value": float(p_value),
+            "drift_detected": p_value < KS_THRESHOLD,
+            "threshold": KS_THRESHOLD,
         }
 
     # Categorical features - Chi-square test
@@ -177,26 +177,21 @@ def calculate_drift_statistics(
             print(f"Warning: Feature '{feature}' not found in data, skipping")
             continue
 
-        chi2_stat, p_value = chi_square_test(
-            reference_df[feature],
-            current_df[feature]
-        )
+        chi2_stat, p_value = chi_square_test(reference_df[feature], current_df[feature])
 
         drift_stats[feature] = {
-            'test': 'chi_square',
-            'statistic': float(chi2_stat),
-            'p_value': float(p_value),
-            'drift_detected': p_value < CHI2_THRESHOLD,
-            'threshold': CHI2_THRESHOLD
+            "test": "chi_square",
+            "statistic": float(chi2_stat),
+            "p_value": float(p_value),
+            "drift_detected": p_value < CHI2_THRESHOLD,
+            "threshold": CHI2_THRESHOLD,
         }
 
     return drift_stats
 
 
 def detect_drift(
-    reference_df: pd.DataFrame,
-    current_df: pd.DataFrame,
-    output_path: str = None
+    reference_df: pd.DataFrame, current_df: pd.DataFrame, output_path: str = None
 ) -> Tuple[bool, Dict]:
     """
     Detect if drift exists in the data.
@@ -225,7 +220,7 @@ def detect_drift(
     # Count how many features show drift
     total_features = len(drift_stats)
     features_with_drift = sum(
-        1 for stats in drift_stats.values() if stats['drift_detected']
+        1 for stats in drift_stats.values() if stats["drift_detected"]
     )
 
     drift_ratio = features_with_drift / total_features if total_features > 0 else 0
@@ -235,15 +230,15 @@ def detect_drift(
 
     # Create detailed report
     drift_report = {
-        'timestamp': datetime.now().isoformat(),
-        'reference_data_shape': reference_df.shape,
-        'current_data_shape': current_df.shape,
-        'total_features_monitored': total_features,
-        'features_with_drift': features_with_drift,
-        'drift_ratio': float(drift_ratio),
-        'drift_threshold': DRIFT_THRESHOLD,
-        'needs_retrain': needs_retrain,
-        'feature_statistics': drift_stats
+        "timestamp": datetime.now().isoformat(),
+        "reference_data_shape": reference_df.shape,
+        "current_data_shape": current_df.shape,
+        "total_features_monitored": total_features,
+        "features_with_drift": features_with_drift,
+        "drift_ratio": float(drift_ratio),
+        "drift_threshold": DRIFT_THRESHOLD,
+        "needs_retrain": needs_retrain,
+        "feature_statistics": drift_stats,
     }
 
     # Print summary
@@ -253,14 +248,18 @@ def detect_drift(
     print(f"Features with drift: {features_with_drift}")
     print(f"Drift ratio: {drift_ratio:.2%}")
     print(f"Drift threshold: {DRIFT_THRESHOLD:.2%}")
-    print(f"\n{'🚨 DRIFT DETECTED - Retraining recommended' if needs_retrain else '✅ No significant drift - Retraining not needed'}")
+    print(
+        f"\n{'🚨 DRIFT DETECTED - Retraining recommended' if needs_retrain else '✅ No significant drift - Retraining not needed'}"
+    )
 
     # Print details of features with drift
     if features_with_drift > 0:
         print("\nFeatures with detected drift:")
         for feature, stats in drift_stats.items():
-            if stats['drift_detected']:
-                print(f"  - {feature}: p-value = {stats['p_value']:.4f} (test: {stats['test']})")
+            if stats["drift_detected"]:
+                print(
+                    f"  - {feature}: p-value = {stats['p_value']:.4f} (test: {stats['test']})"
+                )
 
     print("=" * 60)
 
@@ -270,7 +269,7 @@ def detect_drift(
         output_path.parent.mkdir(parents=True, exist_ok=True)
         # Convert to JSON-serializable format
         serializable_report = convert_to_json_serializable(drift_report)
-        with open(output_path, 'w') as f:
+        with open(output_path, "w") as f:
             json.dump(serializable_report, f, indent=2)
         print(f"\nDrift report saved to: {output_path}")
 
@@ -298,9 +297,7 @@ def load_reference_data(reference_path: str) -> pd.DataFrame:
 
 
 def sample_for_drift_detection(
-    df: pd.DataFrame,
-    sample_size: int = 10000,
-    random_state: int = 42
+    df: pd.DataFrame, sample_size: int = 10000, random_state: int = 42
 ) -> pd.DataFrame:
     """
     Sample data for drift detection (for large datasets).
@@ -327,9 +324,7 @@ def sample_for_drift_detection(
 
 # Main function for use in Airflow DAG
 def run_drift_detection(
-    reference_data_path: str,
-    current_data_path: str,
-    output_report_path: str = None
+    reference_data_path: str, current_data_path: str, output_report_path: str = None
 ) -> bool:
     """
     Main function to run drift detection (for Airflow task).
@@ -358,9 +353,7 @@ def run_drift_detection(
 
     # Detect drift
     needs_retrain, drift_report = detect_drift(
-        reference_sample,
-        current_sample,
-        output_path=output_report_path
+        reference_sample, current_sample, output_path=output_report_path
     )
 
     return needs_retrain

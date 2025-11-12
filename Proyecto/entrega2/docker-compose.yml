@@ -13,9 +13,9 @@ services:
     image: postgres:15-alpine
     container_name: sodai_postgres
     environment:
-      - POSTGRES_USER=airflow
-      - POSTGRES_PASSWORD=airflow
-      - POSTGRES_DB=airflow
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -33,6 +33,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: sodai_airflow
+    user: "50000:0" # Run as airflow user (UID 50000)
     depends_on:
       postgres:
         condition: service_healthy
@@ -45,46 +46,51 @@ services:
     environment:
       # Core
       - AIRFLOW__CORE__EXECUTOR=LocalExecutor
-      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres/airflow
-      - AIRFLOW__CORE__FERNET_KEY=ZmDfcTF7_60GrrY167zsiPd67pEvs0aGOv2oasOM1Pg=
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
+      - AIRFLOW__CORE__FERNET_KEY=${AIRFLOW__CORE__FERNET_KEY}
       - AIRFLOW__CORE__LOAD_EXAMPLES=False
       - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=False
 
       # Webserver
       - AIRFLOW__WEBSERVER__EXPOSE_CONFIG=True
-      - AIRFLOW__WEBSERVER__SECRET_KEY=super_secret_key_change_in_production
+      - AIRFLOW__WEBSERVER__SECRET_KEY=${AIRFLOW__WEBSERVER__SECRET_KEY}
 
       # Scheduler
       - AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL=30
 
       # MLflow
-      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - MLFLOW_TRACKING_URI=${MLFLOW_TRACKING_URI}
 
       # Admin user (created on first run)
       - _AIRFLOW_WWW_USER_CREATE=True
-      - _AIRFLOW_WWW_USER_USERNAME=admin
-      - _AIRFLOW_WWW_USER_PASSWORD=admin
+      - _AIRFLOW_WWW_USER_USERNAME=${_AIRFLOW_WWW_USER_USERNAME}
+      - _AIRFLOW_WWW_USER_PASSWORD=${_AIRFLOW_WWW_USER_PASSWORD}
+
+      # Model configuration
+      - N_OPTUNA_TRIALS=${N_OPTUNA_TRIALS}
+      - DRIFT_THRESHOLD=${DRIFT_THRESHOLD}
+      - MLFLOW_EXPERIMENT_NAME=${MLFLOW_EXPERIMENT_NAME}
 
       # Python
       - PYTHONPATH=/opt/airflow/dags
     volumes:
       # DAGs and modules (read-write for hot reload)
-      - ./dags:/opt/airflow/dags
+      - ./airflow/dags:/opt/airflow/dags
 
       # Data (persistent)
-      - ./data:/opt/airflow/data
+      - ./airflow/data:/opt/airflow/data
 
-      # MLflow runs (persistent)
-      - mlflow_data:/opt/airflow/mlruns
+      # MLflow runs (persistent) - SAME PATH AS MLFLOW SERVICE
+      - ./airflow/mlflow_data:/mlflow
 
       # Models (persistent)
-      - ./models:/opt/airflow/models
+      - ./airflow/models:/opt/airflow/models
 
       # Predictions (persistent)
-      - ./predictions:/opt/airflow/predictions
+      - ./airflow/predictions:/opt/airflow/predictions
 
       # Drift reports (persistent)
-      - ./drift_reports:/opt/airflow/drift_reports
+      - ./airflow/drift_reports:/opt/airflow/drift_reports
 
       # Logs (persistent)
       - airflow_logs:/opt/airflow/logs
@@ -96,7 +102,7 @@ services:
     command: >
       bash -c "
         airflow db migrate &&
-        airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com || true &&
+        airflow users create --username ${_AIRFLOW_WWW_USER_USERNAME} --password ${_AIRFLOW_WWW_USER_PASSWORD} --firstname Admin --lastname User --role Admin --email admin@example.com || true &&
         airflow standalone
       "
     healthcheck:
@@ -113,10 +119,11 @@ services:
   mlflow:
     image: ghcr.io/mlflow/mlflow:v2.17.2
     container_name: sodai_mlflow
+    user: "50000:0" # Same user as airflow for consistent permissions
     ports:
       - "5000:5000"
     volumes:
-      - mlflow_data:/mlflow
+      - ./airflow/mlflow_data:/mlflow
     command: >
       mlflow server
       --backend-store-uri file:///mlflow
@@ -137,8 +144,6 @@ services:
 volumes:
   postgres_data:
     name: sodai_postgres_data
-  mlflow_data:
-    name: sodai_mlflow_data
   airflow_logs:
     name: sodai_airflow_logs
 

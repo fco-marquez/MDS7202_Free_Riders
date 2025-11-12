@@ -21,11 +21,14 @@ def load_final_data(file_path: str) -> pd.DataFrame:
 def split_data(
     df: pd.DataFrame,
     output_dir: str = None,
-    train_ratio: float = 0.70,
-    val_ratio: float = 0.15,
+    train_ratio: float = 0.80,
+    val_ratio: float = 0.20,
 ):
     """
-    Split the DataFrame into training, validation and testing sets.
+    Split the DataFrame into training and validation sets only.
+
+    NOTE: We don't create a test set because predictions will be made
+    for the NEXT WEEK after the most recent data, not on existing data.
 
     Parameters
     ----------
@@ -34,28 +37,24 @@ def split_data(
     output_dir : str, optional
         Directory to save split data
     train_ratio : float
-        Proportion of data for training (default 0.70)
+        Proportion of data for training (default 0.80)
     val_ratio : float
-        Proportion of data for validation (default 0.15)
+        Proportion of data for validation (default 0.20)
 
     Returns
     -------
     tuple
-        (train_data, val_data, test_data)
+        (train_data, val_data)
     """
     # Ordenar datos por fecha para respetar temporalidad
     df_temporal = df.sort_values("week").copy()
 
     # Definir puntos de corte temporal
     train_end = df_temporal["week"].quantile(train_ratio)
-    val_end = df_temporal["week"].quantile(train_ratio + val_ratio)
 
     # Separar los conjuntos basados en tiempo
     train_data = df_temporal[df_temporal["week"] <= train_end]
-    val_data = df_temporal[
-        (df_temporal["week"] > train_end) & (df_temporal["week"] <= val_end)
-    ]
-    test_data = df_temporal[df_temporal["week"] > val_end]
+    val_data = df_temporal[df_temporal["week"] > train_end]
 
     print("Distribución temporal de los conjuntos:")
     print(
@@ -65,12 +64,12 @@ def split_data(
         f"Val:   {val_data['week'].min()} → {val_data['week'].max()} ({len(val_data)} registros)"
     )
     print(
-        f"Test:  {test_data['week'].min()} → {test_data['week'].max()} ({len(test_data)} registros)"
+        "\n⚠ NO se crea conjunto de test - Las predicciones se harán para la semana siguiente"
     )
 
     # Save the data
     if output_dir is None:
-        output_dir = "Proyecto/entrega2/airflow/data/processed"
+        raise ValueError("output_dir must be specified")
 
     import os
 
@@ -78,15 +77,13 @@ def split_data(
 
     train_path = os.path.join(output_dir, "train_data.parquet")
     val_path = os.path.join(output_dir, "val_data.parquet")
-    test_path = os.path.join(output_dir, "test_data.parquet")
 
     train_data.to_parquet(train_path, index=False)
     val_data.to_parquet(val_path, index=False)
-    test_data.to_parquet(test_path, index=False)
 
     print(f"\nSaved splits to: {output_dir}")
 
-    return train_data, val_data, test_data
+    return train_data, val_data
 
 
 def create_advanced_features(X: pd.DataFrame, y: pd.Series = None) -> pd.DataFrame:
@@ -207,14 +204,18 @@ class GeoClusterer(BaseEstimator, TransformerMixin):
     def fit(self, X, y=None):
         if not {"X", "Y"}.issubset(X.columns):
             raise ValueError("Se requieren las columnas 'X' y 'Y' para el clustering.")
-        self.kmeans.fit(X[["X", "Y"]])
+        # Ensure float64 for training
+        X_geo = X[["X", "Y"]].astype("float64")
+        self.kmeans.fit(X_geo)
         return self
 
     def transform(self, X, y=None):
         if not {"X", "Y"}.issubset(X.columns):
             raise ValueError("Se requieren las columnas 'X' y 'Y' para el clustering.")
         X = X.copy()
-        X["cluster"] = self.kmeans.predict(X[["X", "Y"]])
+        # Convert to float64 to match KMeans training dtype
+        X_geo = X[["X", "Y"]].astype("float64")
+        X["cluster"] = self.kmeans.predict(X_geo)
         return X
 
 
@@ -292,20 +293,20 @@ def run_data_splitting(input_data_path: str, output_dir: str = None) -> tuple:
     Returns
     -------
     tuple
-        (train_data, val_data, test_data)
+        (train_data, val_data) - No test set created
     """
     print("=" * 60)
     print("DATA SPLITTING PIPELINE")
     print("=" * 60)
 
     data = load_final_data(input_data_path)
-    train_data, val_data, test_data = split_data(data, output_dir=output_dir)
+    train_data, val_data = split_data(data, output_dir=output_dir)
 
     print("\n" + "=" * 60)
     print("DATA SPLITTING COMPLETED")
     print("=" * 60)
 
-    return train_data, val_data, test_data
+    return train_data, val_data
 
 
 if __name__ == "__main__":
