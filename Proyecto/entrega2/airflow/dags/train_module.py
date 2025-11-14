@@ -41,6 +41,9 @@ from xgboost import XGBClassifier
 
 warnings.filterwarnings("ignore")
 
+import gc
+import os
+
 from mlflow_config import (
     get_experiment_name,
     get_or_create_experiment,
@@ -51,9 +54,14 @@ from mlflow_config import (
 # Import local modules
 from pipeline import create_pipeline
 
+# Configuration from environment
+TRAIN_SAMPLE_FRAC = float(os.getenv("TRAIN_SAMPLE_FRAC", "0.2"))  # Default 20%
+VAL_SAMPLE_FRAC = float(os.getenv("VAL_SAMPLE_FRAC", "0.3"))  # Default 30%
+SHAP_SAMPLE_SIZE = int(os.getenv("SHAP_SAMPLE_SIZE", "500"))  # Reduced from 1000
+
 
 def load_train_val_data(
-    train_path: str, val_path: str, sample_frac: float = 0.3
+    train_path: str, val_path: str, sample_frac: float = None
 ) -> Tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series]:
     """
     Load training and validation data.
@@ -70,16 +78,33 @@ def load_train_val_data(
     tuple
         (X_train, y_train, X_val, y_val)
     """
+    # Use environment variable if sample_frac not provided
+    if sample_frac is None:
+        sample_frac = TRAIN_SAMPLE_FRAC
+
     print(f"Loading training data from: {train_path}")
+    # Read only needed columns to save memory
     train_df = pd.read_parquet(train_path)
+    original_size = len(train_df)
+
     # ✅ MUESTREAR para reducir memoria durante desarrollo
     if sample_frac < 1.0:
-        print(f"Sampling {sample_frac*100}% of training data...")
+        print(
+            f"Sampling {sample_frac*100}% of training data (from {original_size:,} samples)..."
+        )
         train_df = train_df.sample(frac=sample_frac, random_state=42)
     print(f"Loaded {len(train_df):,} training samples")
 
-    print(f"Loading validation data from: {val_path}")
+    print(f"\nLoading validation data from: {val_path}")
     val_df = pd.read_parquet(val_path)
+    original_val_size = len(val_df)
+
+    # Also sample validation to reduce memory
+    if VAL_SAMPLE_FRAC < 1.0:
+        print(
+            f"Sampling {VAL_SAMPLE_FRAC*100}% of validation data (from {original_val_size:,} samples)..."
+        )
+        val_df = val_df.sample(frac=VAL_SAMPLE_FRAC, random_state=42)
     print(f"Loaded {len(val_df):,} validation samples")
 
     # Separate features and target
@@ -156,9 +181,8 @@ def optimize_hyperparameters(
     # Setup MLflow
     setup_mlflow()
     if experiment_name is None:
-        experiment_name = get_experiment_name(
-            f"optimization_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        )
+        # Use fixed experiment name from environment variable
+        experiment_name = os.getenv("MLFLOW_EXPERIMENT_NAME", "sodai_drinks_prediction")
 
     experiment_id = get_or_create_experiment(experiment_name)
     mlflow.set_experiment(experiment_name)
@@ -186,16 +210,25 @@ def optimize_hyperparameters(
             "scale_pos_weight": scale_pos_weight,
             "random_state": 42,
             "n_jobs": -1,
+            "tree_method": "hist",  # Much faster and memory efficient
             # Hyperparameters to optimize
-            "max_depth": trial.suggest_int("max_depth", 3, 10),
-            "learning_rate": trial.suggest_float("learning_rate", 0.001, 0.3, log=True),
-            "n_estimators": trial.suggest_int("n_estimators", 50, 500),
-            "min_child_weight": trial.suggest_int("min_child_weight", 1, 10),
-            "gamma": trial.suggest_float("gamma", 0, 0.5),
-            "subsample": trial.suggest_float("subsample", 0.6, 1.0),
-            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 1.0),
-            "reg_alpha": trial.suggest_float("reg_alpha", 0, 1.0),
-            "reg_lambda": trial.suggest_float("reg_lambda", 0, 1.0),
+            "max_depth": trial.suggest_int("max_depth", 3, 8),  # Reduced from 10
+            "learning_rate": trial.suggest_float(
+                "learning_rate", 0.01, 0.3, log=True
+            ),  # Higher min
+            "n_estimators": trial.suggest_int(
+                "n_estimators", 50, 300
+            ),  # Reduced from 500
+            "min_child_weight": trial.suggest_int(
+                "min_child_weight", 1, 7
+            ),  # Reduced from 10
+            "gamma": trial.suggest_float("gamma", 0, 0.3),  # Reduced from 0.5
+            "subsample": trial.suggest_float("subsample", 0.7, 1.0),  # Higher min
+            "colsample_bytree": trial.suggest_float(
+                "colsample_bytree", 0.7, 1.0
+            ),  # Higher min
+            "reg_alpha": trial.suggest_float("reg_alpha", 0, 0.5),  # Reduced from 1.0
+            "reg_lambda": trial.suggest_float("reg_lambda", 0, 0.5),  # Reduced from 1.0
         }
 
         # Start MLflow run
@@ -226,6 +259,10 @@ def optimize_hyperparameters(
             }
             log_metrics_from_dict(metrics)
 
+            # Clean up to save memory
+            del model
+            gc.collect()
+
             # Optuna optimizes for recall (primary metric)
             return recall
 
@@ -235,8 +272,9 @@ def optimize_hyperparameters(
         study_name=f"xgboost_optimization_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
     )
 
-    # Start parent MLflow run
-    with mlflow.start_run(run_name="optuna_optimization"):
+    # Start parent MLflow run with timestamp for organization
+    optuna_run_name = f"optuna_optimization_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    with mlflow.start_run(run_name=optuna_run_name):
         # Run optimization
         print(f"\nStarting optimization with {n_trials} trials...")
         study.optimize(objective, n_trials=n_trials, show_progress_bar=True)
@@ -333,13 +371,14 @@ def train_final_model(
     # Setup MLflow
     setup_mlflow()
     if experiment_name is None:
-        experiment_name = get_experiment_name(
-            f"final_model_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        )
+        # Use same fixed experiment name as optimization
+        experiment_name = os.getenv("MLFLOW_EXPERIMENT_NAME", "sodai_drinks_prediction")
 
     mlflow.set_experiment(experiment_name)
 
-    with mlflow.start_run(run_name="final_model"):
+    # Use descriptive run name with timestamp
+    run_name = f"final_model_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    with mlflow.start_run(run_name=run_name):
         # Create full pipeline
         preprocessing_pipeline = create_pipeline()
         model = XGBClassifier(**best_params)
@@ -454,6 +493,10 @@ def train_final_model(
             plt.close(fig)
 
             print("SHAP plots generated and logged")
+
+            # Clean up SHAP objects
+            del explainer, shap_values, X_sample
+            gc.collect()
         except Exception as e:
             print(f"Warning: SHAP calculation failed: {e}")
 
@@ -502,11 +545,16 @@ def run_full_training(
     # Load data
     X_train, y_train, X_val, y_val = load_train_val_data(train_data_path, val_data_path)
     print("\nData loaded successfully.")
+
     # Optimize hyperparameters
     best_params = optimize_hyperparameters(
         X_train, y_train, X_val, y_val, n_trials=n_trials
     )
     print("\nHyperparameter optimization completed.")
+
+    # Clean up after optimization
+    gc.collect()
+
     # Train final model
     pipeline = train_final_model(
         X_train,
@@ -516,5 +564,9 @@ def run_full_training(
         best_params=best_params,
         output_model_path=output_model_path,
     )
+
+    # Final cleanup
+    del X_train, y_train, X_val, y_val
+    gc.collect()
 
     return pipeline

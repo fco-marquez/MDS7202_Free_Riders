@@ -1,5 +1,5 @@
 {
-  "timestamp": "2025-11-12T03:57:23.614569",
+  "timestamp": "2025-11-14T02:50:27.305900",
   "reference_data_shape": [
     10000,
     17
@@ -37,8 +37,8 @@
     },
     "customer_type": {
       "test": "chi_square",
-      "statistic": 13.011529125450691,
-      "p_value": 0.042853228396737525,
+      "statistic": 13.011529125450693,
+      "p_value": 0.04285322839673752,
       "drift_detected": true,
       "threshold": 0.05
     },
@@ -72,8 +72,8 @@
     },
     "package": {
       "test": "chi_square",
-      "statistic": 2.732302447296849,
-      "p_value": 0.25508684487964156,
+      "statistic": 2.7323024472968496,
+      "p_value": 0.25508684487964145,
       "drift_detected": false,
       "threshold": 0.05
     }
