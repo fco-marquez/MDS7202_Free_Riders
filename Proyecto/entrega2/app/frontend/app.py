@@ -27,9 +27,18 @@ def check_backend_health():
         return False, str(e)
 
 
-def make_prediction(customer_id: int, product_id: int) -> Tuple[str, str]:
+def make_prediction(customer_id: int, product_id: int, week: Optional[int] = None) -> Tuple[str, str]:
     """
     Make a single prediction via backend API.
+
+    Parameters
+    ----------
+    customer_id : int
+        Customer ID
+    product_id : int
+        Product ID
+    week : int, optional
+        Week to predict (if None, predicts next week)
 
     Returns
     -------
@@ -41,13 +50,20 @@ def make_prediction(customer_id: int, product_id: int) -> Tuple[str, str]:
         if not customer_id or not product_id:
             return "❌ Error: Debes ingresar Customer ID y Product ID", "error"
 
+        # Build request payload
+        payload = {
+            "customer_id": int(customer_id),
+            "product_id": int(product_id)
+        }
+
+        # Add week if specified
+        if week is not None and week > 0:
+            payload["week"] = int(week)
+
         # Call backend
         response = requests.post(
             f"{BACKEND_URL}/predict",
-            json={
-                "customer_id": int(customer_id),
-                "product_id": int(product_id)
-            },
+            json=payload,
             timeout=30
         )
 
@@ -97,9 +113,18 @@ def make_prediction(customer_id: int, product_id: int) -> Tuple[str, str]:
         return f"❌ Error inesperado: {str(e)}", "error"
 
 
-def get_recommendations(customer_id: int, top_n: int = 5) -> Tuple[pd.DataFrame, str]:
+def get_recommendations(customer_id: int, top_n: int = 5, week: Optional[int] = None) -> Tuple[pd.DataFrame, str]:
     """
     Get top N product recommendations via backend API.
+
+    Parameters
+    ----------
+    customer_id : int
+        Customer ID
+    top_n : int
+        Number of recommendations
+    week : int, optional
+        Week to predict (if None, predicts next week)
 
     Returns
     -------
@@ -111,13 +136,20 @@ def get_recommendations(customer_id: int, top_n: int = 5) -> Tuple[pd.DataFrame,
         if not customer_id:
             return pd.DataFrame(), "❌ Error: Debes ingresar un Customer ID"
 
+        # Build request payload
+        payload = {
+            "customer_id": int(customer_id),
+            "top_n": int(top_n)
+        }
+
+        # Add week if specified
+        if week is not None and week > 0:
+            payload["week"] = int(week)
+
         # Call backend
         response = requests.post(
             f"{BACKEND_URL}/recommend",
-            json={
-                "customer_id": int(customer_id),
-                "top_n": int(top_n)
-            },
+            json=payload,
             timeout=60
         )
 
@@ -245,6 +277,12 @@ def create_interface():
                         info="Identificador del producto",
                         precision=0
                     )
+                    pred_week = gr.Number(
+                        label="Week (opcional)",
+                        info="Semana a predecir (vacío = próxima semana)",
+                        precision=0,
+                        value=None
+                    )
 
                 pred_button = gr.Button("🔮 Predecir", variant="primary")
 
@@ -274,8 +312,8 @@ def create_interface():
 
                 # Wire up prediction
                 pred_button.click(
-                    fn=lambda c, p: make_prediction(c, p)[0],
-                    inputs=[pred_customer_id, pred_product_id],
+                    fn=lambda c, p, w: make_prediction(c, p, w)[0],
+                    inputs=[pred_customer_id, pred_product_id, pred_week],
                     outputs=pred_result
                 )
 
@@ -306,6 +344,12 @@ def create_interface():
                         label="Número de recomendaciones",
                         info="Cantidad de productos a recomendar"
                     )
+                    rec_week = gr.Number(
+                        label="Week (opcional)",
+                        info="Semana a predecir (vacío = próxima semana)",
+                        precision=0,
+                        value=None
+                    )
 
                 rec_button = gr.Button("🎁 Generar Recomendaciones", variant="primary")
 
@@ -329,7 +373,7 @@ def create_interface():
                 # Wire up recommendations
                 rec_button.click(
                     fn=get_recommendations,
-                    inputs=[rec_customer_id, rec_top_n],
+                    inputs=[rec_customer_id, rec_top_n, rec_week],
                     outputs=[rec_results, rec_status]
                 )
 

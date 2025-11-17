@@ -66,7 +66,7 @@ class Recommender:
                 raise FileNotFoundError(f"Product data not found at {productos_path}")
         return self._productos_df
 
-    def recommend(self, customer_id: int, top_n: int = 5) -> List[Dict[str, Any]]:
+    def recommend(self, customer_id: int, top_n: int = 5, week: int = None) -> List[Dict[str, Any]]:
         """
         Generate top N product recommendations for a customer.
 
@@ -76,6 +76,8 @@ class Recommender:
             Customer identifier
         top_n : int
             Number of recommendations to return (default: 5)
+        week : int, optional
+            Week to predict (if None, uses next week after max historical week)
 
         Returns
         -------
@@ -96,11 +98,14 @@ class Recommender:
         # Get customer info
         customer = clientes_df[clientes_df['customer_id'] == customer_id].iloc[0]
 
-        # Get next week
+        # Determine which week to predict
         max_week = historical_data['week'].max()
-        next_week = max_week + 1
-
-        logger.info(f"Predicting for week {next_week}")
+        if week is None:
+            next_week = max_week + 1
+            logger.info(f"Predicting for week {next_week} (next week after last historical week: {max_week})")
+        else:
+            next_week = week
+            logger.info(f"Predicting for week {next_week} (user specified, last historical week: {max_week})")
 
         # Create predictions for all products
         predictions_df = self._create_all_predictions(
@@ -207,6 +212,7 @@ class Recommender:
                 'X': customer['X'],
                 'Y': customer['Y'],
                 'num_deliver_per_week': customer['num_deliver_per_week'],
+                'num_visit_per_week': customer['num_visit_per_week'],
                 'zone_id': customer['zone_id'],
                 'region_id': customer['region_id'],
                 'brand': product['brand'],

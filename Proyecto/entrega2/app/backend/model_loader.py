@@ -4,9 +4,22 @@ Implements fallback strategy: MLflow first, then local pickle file.
 """
 import os
 import logging
+import sys
 import mlflow
 import joblib
 from pathlib import Path
+
+# IMPORTANT: Import pipeline module to make custom transformers available
+# This is needed because the trained model contains custom sklearn transformers
+# (GeoClusterer, FeatureEngineer) defined in pipeline.py
+try:
+    import pipeline  # noqa: F401
+    logger = logging.getLogger(__name__)
+    logger.info("✓ Pipeline module imported successfully")
+except ImportError as e:
+    logger = logging.getLogger(__name__)
+    logger.error(f"✗ Failed to import pipeline module: {e}")
+    logger.error("The model cannot be loaded without the pipeline module.")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

@@ -123,6 +123,7 @@ class PredictRequest(BaseModel):
     """Request model for single prediction."""
     customer_id: int = Field(..., description="Customer ID", example=1001)
     product_id: int = Field(..., description="Product ID", example=2001)
+    week: Optional[int] = Field(None, description="Week to predict (optional, defaults to next week)", example=53)
 
 
 class PredictResponse(BaseModel):
@@ -141,6 +142,7 @@ class RecommendRequest(BaseModel):
     """Request model for recommendations."""
     customer_id: int = Field(..., description="Customer ID", example=1001)
     top_n: int = Field(5, description="Number of recommendations", ge=1, le=20)
+    week: Optional[int] = Field(None, description="Week to predict (optional, defaults to next week)", example=53)
 
 
 class Recommendation(BaseModel):
@@ -280,10 +282,12 @@ async def predict(request: PredictRequest):
     ensure_model_loaded()
 
     try:
-        logger.info(f"Prediction request: customer={request.customer_id}, product={request.product_id}")
+        week_info = f", week={request.week}" if request.week else ""
+        logger.info(f"Prediction request: customer={request.customer_id}, product={request.product_id}{week_info}")
         result = predictor.predict(
             customer_id=request.customer_id,
-            product_id=request.product_id
+            product_id=request.product_id,
+            week=request.week
         )
         return PredictResponse(**result)
 
@@ -313,10 +317,12 @@ async def recommend(request: RecommendRequest):
     ensure_model_loaded()
 
     try:
-        logger.info(f"Recommendation request: customer={request.customer_id}, top_n={request.top_n}")
+        week_info = f", week={request.week}" if request.week else ""
+        logger.info(f"Recommendation request: customer={request.customer_id}, top_n={request.top_n}{week_info}")
         recommendations = recommender.recommend(
             customer_id=request.customer_id,
-            top_n=request.top_n
+            top_n=request.top_n,
+            week=request.week
         )
 
         return RecommendResponse(

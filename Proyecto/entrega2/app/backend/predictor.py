@@ -72,7 +72,7 @@ class Predictor:
 
         return self._productos_df
 
-    def predict(self, customer_id: int, product_id: int) -> Dict[str, Any]:
+    def predict(self, customer_id: int, product_id: int, week: int = None) -> Dict[str, Any]:
         """
         Make a prediction for a customer-product pair.
 
@@ -82,6 +82,8 @@ class Predictor:
             Customer identifier
         product_id : int
             Product identifier
+        week : int, optional
+            Week to predict (if None, uses next week after max historical week)
 
         Returns
         -------
@@ -102,11 +104,14 @@ class Predictor:
         if product_id not in productos_df['product_id'].values:
             raise ValueError(f"Product {product_id} not found in database")
 
-        # Get next week to predict
+        # Determine which week to predict
         max_week = historical_data['week'].max()
-        next_week = max_week + 1
-
-        logger.info(f"Predicting for week {next_week} (last historical week: {max_week})")
+        if week is None:
+            next_week = max_week + 1
+            logger.info(f"Predicting for week {next_week} (next week after last historical week: {max_week})")
+        else:
+            next_week = week
+            logger.info(f"Predicting for week {next_week} (user specified, last historical week: {max_week})")
 
         # Create prediction row
         prediction_row = self._create_prediction_row(
@@ -209,6 +214,7 @@ class Predictor:
             'X': customer['X'],
             'Y': customer['Y'],
             'num_deliver_per_week': customer['num_deliver_per_week'],
+            'num_visit_per_week': customer['num_visit_per_week'],
             'zone_id': customer['zone_id'],
             'region_id': customer['region_id'],
             'brand': product['brand'],
