@@ -13,6 +13,7 @@ import mlflow
 import numpy as np
 import pandas as pd
 from mlflow_config import get_experiment_name, load_model_from_mlflow, setup_mlflow
+from pipeline import create_pipeline
 
 
 def load_best_model(experiment_name: str = None, fallback_model_path: str = None):
@@ -179,24 +180,19 @@ def merge_historical_data_for_features(
     print("MERGING HISTORICAL DATA FOR FEATURE ENGINEERING")
     print("=" * 60)
 
-    # We need to append the universe to historical data to calculate rolling features
+    # We need to append the universe to historical data to calculate rolling features (7 weeks is enough)
     # The universe will have bought=0 (placeholder) since we don't know actual purchases yet
+    historical_df = historical_df.copy()
+    universe_df = universe_df.copy()
 
-    # Ensure universe has the same columns as historical data
-    for col in historical_df.columns:
-        if col not in universe_df.columns and col != "bought":
-            # Fill with placeholder values if column missing
-            universe_df[col] = 0
+    historical_df = historical_df[
+        historical_df["week"] >= (universe_df["week"].min() - 7)
+    ]  # Keep last 7 weeks only
 
-    # Add bought column (placeholder, will be predicted)
-    universe_df["bought"] = 0
-
-    # Combine historical + universe
-    combined = pd.concat([historical_df, universe_df], ignore_index=True)
-
-    # Sort by customer_id, product_id, week to ensure proper time ordering
-    combined = combined.sort_values(["customer_id", "product_id", "week"]).reset_index(
-        drop=True
+    # Create the columns needed for merging
+    universe_df["bought"] = 0  # Placeholder
+    combined = pd.concat(
+        [historical_df, universe_df], ignore_index=True, axis=0, join="outer"
     )
 
     print(f"Combined data size: {len(combined):,} rows")
@@ -233,6 +229,10 @@ def generate_predictions(
     print("GENERATING PREDICTIONS (BATCH MODE)")
     print("=" * 60)
 
+    pipeline = create_pipeline()
+
+    X_pred = pipeline.transform(X_pred)
+
     total_samples = len(X_pred)
     print(f"Total samples: {total_samples:,}")
     print(f"Batch size: {batch_size:,}")
@@ -248,7 +248,9 @@ def generate_predictions(
         batch_num = (i // batch_size) + 1
         total_batches = (total_samples + batch_size - 1) // batch_size
 
-        print(f"\nProcessing batch {batch_num}/{total_batches} (rows {i:,} to {batch_end:,})...")
+        print(
+            f"\nProcessing batch {batch_num}/{total_batches} (rows {i:,} to {batch_end:,})..."
+        )
 
         X_batch = X_pred.iloc[i:batch_end]
 
@@ -365,16 +367,34 @@ def run_prediction_pipeline(
     products_df = pd.read_parquet(products_path)
     historical_df = pd.read_parquet(historical_data_path)
 
+    # Get unique customers and products from historical data
+    customers_df = (
+        historical_df[["customer_id"]]
+        .drop_duplicates()
+        .merge(customers_df, on="customer_id", how="left")
+    )
+    products_df = (
+        historical_df[["product_id"]]
+        .drop_duplicates()
+        .merge(products_df, on="product_id", how="left")
+    )
+
     print(f"Customers (total): {len(customers_df):,}")
     print(f"Products (total): {len(products_df):,}")
     print(f"Historical data: {len(historical_df):,}")
 
     # Limit customers if specified (to reduce memory usage)
     if max_customers is not None and len(customers_df) > max_customers:
-        print(f"\n⚠️  Limiting to {max_customers:,} customers (out of {len(customers_df):,})")
-        print("   This is to reduce memory usage. Remove max_customers param for full universe.")
+        print(
+            f"\n⚠️  Limiting to {max_customers:,} customers (out of {len(customers_df):,})"
+        )
+        print(
+            "   This is to reduce memory usage. Remove max_customers param for full universe."
+        )
         customers_df = customers_df.head(max_customers)
-        print(f"   Using customers: {customers_df['customer_id'].min()} to {customers_df['customer_id'].max()}")
+        print(
+            f"   Using customers: {customers_df['customer_id'].min()} to {customers_df['customer_id'].max()}"
+        )
 
     print(f"\nCustomers (for prediction): {len(customers_df):,}")
     print(f"Products (for prediction): {len(products_df):,}")
@@ -386,11 +406,14 @@ def run_prediction_pipeline(
     # Create universe for NEXT WEEK (latest_week + 1)
     # This follows the requirement: "predict for the week following the most recent in the data"
     print(f"\n📅 Creating universe for prediction week: {latest_week + 1}")
-    X_pred = create_next_week_universe(customers_df, products_df, latest_week)
+    X__raw = create_next_week_universe(customers_df, products_df, latest_week)
+
+    # Merge historical data to enable feature engineering
+    X_combined = merge_historical_data_for_features(X__raw, historical_df)
 
     # Generate predictions with batch processing
     predictions = generate_predictions(
-        model, X_pred, output_path=output_predictions_path, batch_size=batch_size
+        model, X_combined, output_path=output_predictions_path, batch_size=batch_size
     )
 
     print("\n" + "=" * 80)

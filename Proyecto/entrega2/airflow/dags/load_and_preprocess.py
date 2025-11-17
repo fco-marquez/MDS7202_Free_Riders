@@ -6,13 +6,38 @@ import numpy as np
 import pandas as pd
 
 
-def load_data(folder_path: str) -> Dict[str, pd.DataFrame]:
+def load_data(folder_path: str, static_folder_path: str) -> Dict[str, pd.DataFrame]:
     """Load data from Parquet files in a folder into a DataFrame."""
-    all_files = glob.glob(os.path.join(folder_path, "*.parquet"))
-    if not all_files:
+    transaction_files = glob.glob(os.path.join(folder_path, "*.parquet"))
+    if not transaction_files:
         raise FileNotFoundError(f"No Parquet files found in the folder: {folder_path}")
+    static_files = glob.glob(os.path.join(static_folder_path, "*.parquet"))
+    if not static_files:
+        raise FileNotFoundError(
+            f"No Parquet files found in the static folder: {static_folder_path}"
+        )
     df_dict = {}
-    for file in all_files:
+    if len(transaction_files) > 1:
+        # Concatenate multiple transaction files into one DataFrame
+        print(
+            "Multiple transaction files found. Concatenating them into one DataFrame."
+        )
+        dfs = [pd.read_parquet(file) for file in transaction_files]
+        transactions_df = pd.concat(dfs, ignore_index=True)
+        # Delete individual parquet files to free memory
+        for file in transaction_files:
+            os.remove(file)
+        print("Deleted individual transaction parquet files to free memory.")
+        # Save concatenated DataFrame to a single parquet file
+        concatenated_path = os.path.join(folder_path, "transacciones.parquet")
+        transactions_df.to_parquet(concatenated_path, index=False)
+        df_dict = {"transacciones.parquet": transactions_df}
+    else:
+        for file in transaction_files:
+            print(f"Loading file: {file}")
+            df = pd.read_parquet(file)
+            df_dict[os.path.basename(file)] = df
+    for file in static_files:
         print(f"Loading file: {file}")
         df = pd.read_parquet(file)
         df_dict[os.path.basename(file)] = df
@@ -70,7 +95,10 @@ def optimize_dataframes(dfs: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]
 def create_week_and_objective(dfs: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
     """Create 'week' and objective variable (bought) columns in the transactions DataFrame."""
     transactions_df = dfs.get("transacciones.parquet")
-    transactions_df["week"] = transactions_df["purchase_date"].dt.isocalendar().week
+    iso_calendar = transactions_df["purchase_date"].dt.isocalendar()
+    transactions_df["week"] = (
+        (iso_calendar.year - iso_calendar.year.min()) * 52 + iso_calendar.week
+    ).astype("int16")
     # Crear variable objetivo como 1 (dtype int8)
     transactions_df["bought"] = np.array(1, dtype="int8")
 
@@ -147,7 +175,7 @@ def join_data(dfs: Dict[str, pd.DataFrame], output_path: str = None):
 
 
 def run_preprocessing_pipeline(
-    raw_data_folder: str, output_data_path: str = None
+    raw_data_folder: str, output_data_path: str = None, static_data_folder: str = None
 ) -> pd.DataFrame:
     """
     Run complete preprocessing pipeline (for Airflow task).

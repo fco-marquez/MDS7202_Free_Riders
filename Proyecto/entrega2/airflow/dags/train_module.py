@@ -263,8 +263,8 @@ def optimize_hyperparameters(
             del model
             gc.collect()
 
-            # Optuna optimizes for recall (primary metric)
-            return recall
+            # Optuna optimizes for f1 (primary metric)
+            return f1
 
     # Create Optuna study
     study = optuna.create_study(
@@ -284,7 +284,7 @@ def optimize_hyperparameters(
         print("OPTIMIZATION RESULTS")
         print("=" * 60)
         print(f"Best trial: {study.best_trial.number}")
-        print(f"Best recall: {study.best_value:.4f}")
+        print(f"Best f1: {study.best_value:.4f}")
         print("\nBest hyperparameters:")
         for key, value in study.best_params.items():
             print(f"  {key}: {value}")
