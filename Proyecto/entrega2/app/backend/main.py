@@ -383,6 +383,46 @@ async def get_sample_products(limit: int = 10):
         )
 
 
+@app.get("/customers/list", tags=["Utility"])
+async def list_customers(limit: int = 100):
+    """
+    Get list of customers with their attributes for selection.
+    Returns customer_id with descriptive label.
+    """
+    # Ensure model is loaded (lazy loading)
+    ensure_model_loaded()
+
+    try:
+        customers_list = predictor.get_customers_with_labels(limit=limit)
+        return {"customers": customers_list, "count": len(customers_list)}
+    except Exception as e:
+        logger.error(f"Failed to get customers list: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve customers: {str(e)}"
+        )
+
+
+@app.get("/products/list", tags=["Utility"])
+async def list_products(limit: int = 100):
+    """
+    Get list of products with their attributes for selection.
+    Returns product_id with descriptive label.
+    """
+    # Ensure model is loaded (lazy loading)
+    ensure_model_loaded()
+
+    try:
+        products_list = predictor.get_products_with_labels(limit=limit)
+        return {"products": products_list, "count": len(products_list)}
+    except Exception as e:
+        logger.error(f"Failed to get products list: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve products: {str(e)}"
+        )
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

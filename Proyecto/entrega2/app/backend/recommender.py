@@ -46,7 +46,7 @@ class Recommender:
         """Load client information."""
         if self._clientes_df is None:
             logger.info("Loading client data...")
-            clientes_path = self.data_dir / "raw" / "clientes.parquet"
+            clientes_path = self.data_dir / "static" / "clientes.parquet"
             if clientes_path.exists():
                 self._clientes_df = pd.read_parquet(clientes_path)
                 logger.info(f"Loaded {len(self._clientes_df):,} clients")
@@ -58,7 +58,7 @@ class Recommender:
         """Load product information."""
         if self._productos_df is None:
             logger.info("Loading product data...")
-            productos_path = self.data_dir / "raw" / "productos.parquet"
+            productos_path = self.data_dir / "static" / "productos.parquet"
             if productos_path.exists():
                 self._productos_df = pd.read_parquet(productos_path)
                 logger.info(f"Loaded {len(self._productos_df):,} products")

@@ -213,12 +213,64 @@ def get_sample_ids() -> Tuple[str, str]:
         return f"Error: {e}", f"Error: {e}"
 
 
+def load_customers_list(limit: int = 100) -> Tuple[list, dict]:
+    """
+    Load customer list with labels from backend.
+
+    Returns
+    -------
+    tuple
+        (list of labels for dropdown, dict mapping label to id)
+    """
+    try:
+        response = requests.get(f"{BACKEND_URL}/customers/list?limit={limit}", timeout=10)
+        if response.status_code == 200:
+            customers = response.json()['customers']
+            labels = [c['label'] for c in customers]
+            mapping = {c['label']: c['id'] for c in customers}
+            return labels, mapping
+        else:
+            return [], {}
+    except Exception as e:
+        print(f"Error loading customers: {e}")
+        return [], {}
+
+
+def load_products_list(limit: int = 100) -> Tuple[list, dict]:
+    """
+    Load product list with labels from backend.
+
+    Returns
+    -------
+    tuple
+        (list of labels for dropdown, dict mapping label to id)
+    """
+    try:
+        response = requests.get(f"{BACKEND_URL}/products/list?limit={limit}", timeout=10)
+        if response.status_code == 200:
+            products = response.json()['products']
+            labels = [p['label'] for p in products]
+            mapping = {p['label']: p['id'] for p in products}
+            return labels, mapping
+        else:
+            return [], {}
+    except Exception as e:
+        print(f"Error loading products: {e}")
+        return [], {}
+
+
 # ============================================================================
 # Gradio Interface
 # ============================================================================
 
 def create_interface():
     """Create Gradio interface with tabs."""
+
+    # Load customer and product lists
+    print("Loading customers and products lists...")
+    customers_labels, customers_mapping = load_customers_list(limit=200)
+    products_labels, products_mapping = load_products_list(limit=200)
+    print(f"Loaded {len(customers_labels)} customers and {len(products_labels)} products")
 
     with gr.Blocks(
         title="SODAI Drinks - Predicción de Compras",
@@ -261,21 +313,23 @@ def create_interface():
                     """
                     ### Predecir si un cliente comprará un producto específico
 
-                    Ingresa el ID del cliente y el ID del producto para obtener la predicción
+                    Selecciona un cliente y un producto para obtener la predicción
                     de compra para la próxima semana.
                     """
                 )
 
                 with gr.Row():
-                    pred_customer_id = gr.Number(
-                        label="Customer ID",
-                        info="Identificador del cliente",
-                        precision=0
+                    pred_customer_dropdown = gr.Dropdown(
+                        choices=customers_labels,
+                        label="Cliente",
+                        info="Selecciona un cliente",
+                        filterable=True
                     )
-                    pred_product_id = gr.Number(
-                        label="Product ID",
-                        info="Identificador del producto",
-                        precision=0
+                    pred_product_dropdown = gr.Dropdown(
+                        choices=products_labels,
+                        label="Producto",
+                        info="Selecciona un producto",
+                        filterable=True
                     )
                     pred_week = gr.Number(
                         label="Week (opcional)",
@@ -288,32 +342,22 @@ def create_interface():
 
                 pred_result = gr.Markdown(label="Resultado")
 
-                # Examples info
-                with gr.Accordion("ℹ️ Ver ejemplos de IDs", open=False):
-                    examples_btn = gr.Button("Obtener ejemplos")
-                    example_customers = gr.Textbox(label="Customer IDs de ejemplo", interactive=False)
-                    example_products = gr.Textbox(label="Product IDs de ejemplo", interactive=False)
+                # Wire up prediction - convert labels to IDs
+                def predict_from_dropdown(customer_label, product_label, week):
+                    if not customer_label or not product_label:
+                        return "❌ Error: Debes seleccionar un cliente y un producto"
 
-                    examples_btn.click(
-                        fn=get_sample_ids,
-                        outputs=[example_customers, example_products]
-                    )
+                    customer_id = customers_mapping.get(customer_label)
+                    product_id = products_mapping.get(product_label)
 
-                # Examples
-                gr.Examples(
-                    examples=[
-                        [1001, 2001],
-                        [1002, 2005],
-                        [1003, 2010],
-                    ],
-                    inputs=[pred_customer_id, pred_product_id],
-                    label="Ejemplos rápidos"
-                )
+                    if customer_id is None or product_id is None:
+                        return "❌ Error: Cliente o producto no encontrado"
 
-                # Wire up prediction
+                    return make_prediction(customer_id, product_id, week)[0]
+
                 pred_button.click(
-                    fn=lambda c, p, w: make_prediction(c, p, w)[0],
-                    inputs=[pred_customer_id, pred_product_id, pred_week],
+                    fn=predict_from_dropdown,
+                    inputs=[pred_customer_dropdown, pred_product_dropdown, pred_week],
                     outputs=pred_result
                 )
 
@@ -331,10 +375,11 @@ def create_interface():
                 )
 
                 with gr.Row():
-                    rec_customer_id = gr.Number(
-                        label="Customer ID",
-                        info="Identificador del cliente",
-                        precision=0
+                    rec_customer_dropdown = gr.Dropdown(
+                        choices=customers_labels,
+                        label="Cliente",
+                        info="Selecciona un cliente",
+                        filterable=True
                     )
                     rec_top_n = gr.Slider(
                         minimum=1,
@@ -359,21 +404,21 @@ def create_interface():
                     wrap=True
                 )
 
-                # Examples
-                gr.Examples(
-                    examples=[
-                        [1001, 5],
-                        [1002, 10],
-                        [1003, 3],
-                    ],
-                    inputs=[rec_customer_id, rec_top_n],
-                    label="Ejemplos rápidos"
-                )
+                # Wire up recommendations - convert label to ID
+                def recommend_from_dropdown(customer_label, top_n, week):
+                    if not customer_label:
+                        return pd.DataFrame(), "❌ Error: Debes seleccionar un cliente"
 
-                # Wire up recommendations
+                    customer_id = customers_mapping.get(customer_label)
+
+                    if customer_id is None:
+                        return pd.DataFrame(), "❌ Error: Cliente no encontrado"
+
+                    return get_recommendations(customer_id, top_n, week)
+
                 rec_button.click(
-                    fn=get_recommendations,
-                    inputs=[rec_customer_id, rec_top_n, rec_week],
+                    fn=recommend_from_dropdown,
+                    inputs=[rec_customer_dropdown, rec_top_n, rec_week],
                     outputs=[rec_results, rec_status]
                 )
 

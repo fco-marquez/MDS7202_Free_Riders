@@ -1,11 +1,11 @@
-version: "3.8"
-
 # SodAI Drinks Prediction Pipeline - Docker Compose Configuration
 # ================================================================
-# This docker-compose file orchestrates:
+# This docker-compose file orchestrates the complete SODAI system:
 # - Airflow (webserver + scheduler in standalone mode)
 # - MLflow UI (for experiment tracking)
 # - PostgreSQL (Airflow metadata database)
+# - FastAPI Backend (prediction API)
+# - Gradio Frontend (user interface)
 
 services:
   # PostgreSQL - Airflow Metadata Database
@@ -134,7 +134,7 @@ services:
       --host 0.0.0.0
       --port 5000
     healthcheck:
-      test: ["CMD", "curl", "--fail", "http://localhost:5000/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health').read()"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -142,6 +142,60 @@ services:
     restart: unless-stopped
     networks:
       - sodai_network
+
+  # ============================================================================
+  # Backend - FastAPI Prediction API
+  # ============================================================================
+  backend:
+    build:
+      context: ./app/backend
+      dockerfile: Dockerfile
+    container_name: sodai_app_backend
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount data directories from Airflow (read-only)
+      - ./airflow/data:/data:ro
+      - ./airflow/models:/models:ro
+      - ./airflow/mlflow_data:/mlflow:ro
+    environment:
+      # MLflow configuration
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLFLOW_EXPERIMENT_NAME: sodai_drinks_prediction
+      # Model path
+      MODEL_PATH: /models/best_model.pkl
+    networks:
+      - sodai_network
+    depends_on:
+      mlflow:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # ============================================================================
+  # Frontend - Gradio User Interface
+  # ============================================================================
+  frontend:
+    build:
+      context: ./app/frontend
+      dockerfile: Dockerfile
+    container_name: sodai_app_frontend
+    ports:
+      - "7860:7860"
+    environment:
+      # Backend URL
+      BACKEND_URL: http://backend:8000
+    networks:
+      - sodai_network
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
 
 # Volumes for data persistence
 volumes:

@@ -50,12 +50,16 @@ class Predictor:
         """Load client information."""
         if self._clientes_df is None:
             logger.info("Loading client data...")
-            clientes_path = self.data_dir / "raw" / "clientes.parquet"
+            # Try static first, then raw (for backwards compatibility)
+            clientes_path = self.data_dir / "static" / "clientes.parquet"
+            if not clientes_path.exists():
+                clientes_path = self.data_dir / "raw" / "clientes.parquet"
+
             if clientes_path.exists():
                 self._clientes_df = pd.read_parquet(clientes_path)
-                logger.info(f"Loaded {len(self._clientes_df):,} clients")
+                logger.info(f"Loaded {len(self._clientes_df):,} clients from {clientes_path}")
             else:
-                raise FileNotFoundError(f"Client data not found at {clientes_path}")
+                raise FileNotFoundError(f"Client data not found at {self.data_dir}/static/ or {self.data_dir}/raw/")
 
         return self._clientes_df
 
@@ -63,12 +67,16 @@ class Predictor:
         """Load product information."""
         if self._productos_df is None:
             logger.info("Loading product data...")
-            productos_path = self.data_dir / "raw" / "productos.parquet"
+            # Try static first, then raw (for backwards compatibility)
+            productos_path = self.data_dir / "static" / "productos.parquet"
+            if not productos_path.exists():
+                productos_path = self.data_dir / "raw" / "productos.parquet"
+
             if productos_path.exists():
                 self._productos_df = pd.read_parquet(productos_path)
-                logger.info(f"Loaded {len(self._productos_df):,} products")
+                logger.info(f"Loaded {len(self._productos_df):,} products from {productos_path}")
             else:
-                raise FileNotFoundError(f"Product data not found at {productos_path}")
+                raise FileNotFoundError(f"Product data not found at {self.data_dir}/static/ or {self.data_dir}/raw/")
 
         return self._productos_df
 
@@ -263,3 +271,55 @@ class Predictor:
         """Get list of available product IDs."""
         productos_df = self._load_product_data()
         return productos_df['product_id'].head(limit).tolist()
+
+    def get_customers_with_labels(self, limit: int = 100):
+        """
+        Get list of customers with descriptive labels.
+
+        Returns
+        -------
+        list of dict
+            Each dict contains 'id' and 'label' for customer
+        """
+        clientes_df = self._load_client_data()
+        customers = []
+
+        for _, row in clientes_df.head(limit).iterrows():
+            label = f"Customer {row['customer_id']} - {row['customer_type']} (Region {row['region_id']}, Zone {row['zone_id']})"
+            customers.append({
+                'id': int(row['customer_id']),
+                'label': label,
+                'customer_type': row['customer_type'],
+                'region_id': int(row['region_id']),
+                'zone_id': int(row['zone_id'])
+            })
+
+        return customers
+
+    def get_products_with_labels(self, limit: int = 100):
+        """
+        Get list of products with descriptive labels.
+
+        Returns
+        -------
+        list of dict
+            Each dict contains 'id' and 'label' for product
+        """
+        productos_df = self._load_product_data()
+        products = []
+
+        for _, row in productos_df.head(limit).iterrows():
+            # Create descriptive label: Brand + Category + Size + Package
+            label = f"{row['brand']} - {row['category']} ({row['size']}L {row['package']})"
+            products.append({
+                'id': int(row['product_id']),
+                'label': label,
+                'brand': row['brand'],
+                'category': row['category'],
+                'sub_category': row['sub_category'],
+                'segment': row['segment'],
+                'package': row['package'],
+                'size': float(row['size'])
+            })
+
+        return products
