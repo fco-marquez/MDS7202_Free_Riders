@@ -16,8 +16,10 @@ Date: 2024
 
 import datetime as dt
 import os
+import shutil
 from pathlib import Path
 
+from airflow import DAG
 from airflow.operators.empty import EmptyOperator
 from airflow.operators.python import BranchPythonOperator, PythonOperator
 from airflow.utils.trigger_rule import TriggerRule
@@ -29,8 +31,6 @@ from pipeline import run_data_splitting
 from predict_module import run_prediction_pipeline
 from train_module import run_full_training
 
-from airflow import DAG
-
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
@@ -38,6 +38,7 @@ from airflow import DAG
 # Base paths
 BASE_DIR = Path(os.getenv("AIRFLOW_HOME", "/opt/airflow"))
 RAW_DATA_DIR = BASE_DIR / "data" / "raw"
+STATIC_DATA_DIR = BASE_DIR / "data" / "static"
 PROCESSED_DATA_DIR = BASE_DIR / "data" / "processed"
 PREDICTIONS_DIR = BASE_DIR / "predictions"
 DRIFT_REPORTS_DIR = BASE_DIR / "drift_reports"
@@ -48,11 +49,12 @@ for directory in [PROCESSED_DATA_DIR, PREDICTIONS_DIR, DRIFT_REPORTS_DIR, MODELS
     directory.mkdir(parents=True, exist_ok=True)
 
 # File paths
+CURRENT_DATA_PATH = RAW_DATA_DIR / "current_data.parquet"
 FINAL_DATA_PATH = PROCESSED_DATA_DIR / "final_data.parquet"
 TRAIN_DATA_PATH = PROCESSED_DATA_DIR / "train_data.parquet"
 VAL_DATA_PATH = PROCESSED_DATA_DIR / "val_data.parquet"
-CUSTOMERS_PATH = RAW_DATA_DIR / "clientes.parquet"
-PRODUCTS_PATH = RAW_DATA_DIR / "productos.parquet"
+CUSTOMERS_PATH = STATIC_DATA_DIR / "clientes.parquet"
+PRODUCTS_PATH = STATIC_DATA_DIR / "productos.parquet"
 DRIFT_REPORT_PATH = DRIFT_REPORTS_DIR / "drift_report_{execution_date}.json"
 MODEL_PATH = MODELS_DIR / "best_model.pkl"
 PREDICTIONS_PATH = PREDICTIONS_DIR / "predictions_{execution_date}.parquet"
@@ -103,9 +105,22 @@ def preprocess_data(**context):
     """
     Preprocess raw data: clean, transform, and create universe.
     """
-    run_preprocessing_pipeline(
-        raw_data_folder=str(RAW_DATA_DIR), output_data_path=str(FINAL_DATA_PATH)
-    )
+    # Check if the is current data file exists
+    if not CURRENT_DATA_PATH.exists():
+        Warning(
+            f"Current data file not found: {CURRENT_DATA_PATH}. First time running the dag, no need to detect drift."
+        )
+        run_preprocessing_pipeline(
+            raw_data_folder=str(RAW_DATA_DIR),
+            output_data_path=str(CURRENT_DATA_PATH),
+            static_data_folder=str(STATIC_DATA_DIR),
+        )
+    else:
+        run_preprocessing_pipeline(
+            raw_data_folder=str(RAW_DATA_DIR),
+            output_data_path=str(FINAL_DATA_PATH),
+            static_data_folder=str(STATIC_DATA_DIR),
+        )
 
 
 def split_data(**context):
@@ -113,7 +128,7 @@ def split_data(**context):
     Split processed data into train, validation, and test sets.
     """
     run_data_splitting(
-        input_data_path=str(FINAL_DATA_PATH), output_dir=str(PROCESSED_DATA_DIR)
+        input_data_path=str(CURRENT_DATA_PATH), output_dir=str(PROCESSED_DATA_DIR)
     )
 
 
@@ -123,12 +138,18 @@ def detect_drift(**context):
     """
     execution_date = context["ds"]
     drift_report_path = str(DRIFT_REPORT_PATH).format(execution_date=execution_date)
-
-    needs_retrain = run_drift_detection(
-        reference_data_path=str(TRAIN_DATA_PATH),
-        current_data_path=str(FINAL_DATA_PATH),
-        output_report_path=drift_report_path,
-    )
+    if not FINAL_DATA_PATH.exists():
+        Warning(
+            f"Final data file not found: {FINAL_DATA_PATH}. First time running the dag, no need to detect drift."
+        )
+        needs_retrain = True
+        needs_retrain
+    else:
+        needs_retrain = run_drift_detection(
+            reference_data_path=str(CURRENT_DATA_PATH),
+            current_data_path=str(FINAL_DATA_PATH),
+            output_report_path=drift_report_path,
+        )
 
     # Push result to XCom for branching
     context["task_instance"].xcom_push(key="needs_retrain", value=needs_retrain)
@@ -154,13 +175,15 @@ def decide_retrain(**context):
 
     # Retrain if drift detected OR no model exists (first run)
     if needs_retrain or not model_exists:
+        # Save current data as reference for next run
+        shutil.copyfile(FINAL_DATA_PATH, CURRENT_DATA_PATH)
         if not model_exists:
             print("→ Reason: No existing model found (first run)")
         else:
             print("→ Reason: Drift detected")
         print("→ Decision: RETRAIN MODEL")
         print("=" * 60)
-        return "train_model"
+        return "split_data"
     else:
         print("→ Decision: SKIP RETRAINING")
         print("=" * 60)
@@ -199,12 +222,12 @@ def generate_predictions(**context):
     predictions = run_prediction_pipeline(
         customers_path=str(CUSTOMERS_PATH),
         products_path=str(PRODUCTS_PATH),
-        historical_data_path=str(FINAL_DATA_PATH),
+        historical_data_path=CURRENT_DATA_PATH,
         model_experiment_name=MLFLOW_EXPERIMENT,
         model_fallback_path=str(MODEL_PATH),
         output_predictions_path=predictions_path,
         max_customers=100,  # Limit to 100 customers (~97K predictions instead of 1.5M)
-        batch_size=20000,   # Process 20K rows at a time
+        batch_size=20000,  # Process 20K rows at a time
     )
 
     print(f"\n✓ Predictions saved to: {predictions_path}")
@@ -301,7 +324,7 @@ with DAG(
         doc_md="""
         ### Branching Decision
         Decides whether to retrain the model based on drift detection results.
-        - If drift detected → train_model
+        - If drift detected → split -> train_model
         - If no drift → skip_retrain
         """,
     )
@@ -361,13 +384,13 @@ with DAG(
     # ========================================================================
 
     # Linear flow until branching
-    start >> extract >> preprocess >> split >> drift_detection >> branch
+    start >> extract >> preprocess >> drift_detection >> branch
 
     # Branching: retrain or skip
-    branch >> [train, skip]
+    branch >> [split, skip]
 
-    # Both branches converge to prediction
-    [train, skip] >> predict >> end
+    skip >> predict >> end
+    split >> train >> predict >> end
 
 
 # ============================================================================
@@ -394,13 +417,13 @@ model retraining.
 
 ## Data Flow
 ```
-Raw Data → Preprocessing → Train/Val/Test Split → Drift Detection
-                                                         ↓
-                                            ┌─── Drift? ───┐
-                                            ↓              ↓
-                                        Retrain         Skip
-                                            ↓              ↓
-                                            └─→ Predict ←─┘
+Raw Data → Preprocessing → Drift Detection
+                                    ↓
+                            ┌─── Drift? ───┐
+                            ↓              ↓
+                        Retrain         Skip
+                            ↓              ↓
+                            └─→ Predict ←─┘
 ```
 
 ## Configuration
