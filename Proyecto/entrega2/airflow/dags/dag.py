@@ -187,10 +187,15 @@ def generate_predictions(**context):
 
     Creates universe for the week AFTER the most recent week in historical data.
     This follows the requirement: "predict for the week following the most recent in the data"
+
+    NOTE: To avoid OOM errors, we limit to first 100 customers by default.
+    Remove max_customers parameter to generate for all customers (requires more RAM).
     """
     execution_date = context["ds"]
     predictions_path = str(PREDICTIONS_PATH).format(execution_date=execution_date)
 
+    # Limit customers to avoid OOM (1569 customers × 971 products = 1.5M predictions)
+    # For production with sufficient RAM, remove max_customers parameter
     predictions = run_prediction_pipeline(
         customers_path=str(CUSTOMERS_PATH),
         products_path=str(PRODUCTS_PATH),
@@ -198,6 +203,8 @@ def generate_predictions(**context):
         model_experiment_name=MLFLOW_EXPERIMENT,
         model_fallback_path=str(MODEL_PATH),
         output_predictions_path=predictions_path,
+        max_customers=100,  # Limit to 100 customers (~97K predictions instead of 1.5M)
+        batch_size=20000,   # Process 20K rows at a time
     )
 
     print(f"\n✓ Predictions saved to: {predictions_path}")

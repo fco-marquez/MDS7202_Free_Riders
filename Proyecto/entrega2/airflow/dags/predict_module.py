@@ -208,10 +208,10 @@ def merge_historical_data_for_features(
 
 
 def generate_predictions(
-    model, X_pred: pd.DataFrame, output_path: str = None
+    model, X_pred: pd.DataFrame, output_path: str = None, batch_size: int = 50000
 ) -> pd.DataFrame:
     """
-    Generate predictions using the trained model.
+    Generate predictions using the trained model with batch processing.
 
     Parameters
     ----------
@@ -221,6 +221,8 @@ def generate_predictions(
         Features for prediction
     output_path : str, optional
         Path to save predictions
+    batch_size : int, optional
+        Number of samples to process at once (default: 50000)
 
     Returns
     -------
@@ -228,21 +230,49 @@ def generate_predictions(
         Predictions with probabilities
     """
     print("\n" + "=" * 60)
-    print("GENERATING PREDICTIONS")
+    print("GENERATING PREDICTIONS (BATCH MODE)")
     print("=" * 60)
 
-    print(f"Generating predictions for {len(X_pred):,} samples...")
+    total_samples = len(X_pred)
+    print(f"Total samples: {total_samples:,}")
+    print(f"Batch size: {batch_size:,}")
+    print(f"Number of batches: {(total_samples + batch_size - 1) // batch_size}")
 
-    # Make predictions
-    y_pred = model.predict(X_pred)
-    y_pred_proba = model.predict_proba(X_pred)[:, 1]
+    # Store predictions
+    all_predictions = []
+    all_probabilities = []
+
+    # Process in batches to avoid memory issues
+    for i in range(0, total_samples, batch_size):
+        batch_end = min(i + batch_size, total_samples)
+        batch_num = (i // batch_size) + 1
+        total_batches = (total_samples + batch_size - 1) // batch_size
+
+        print(f"\nProcessing batch {batch_num}/{total_batches} (rows {i:,} to {batch_end:,})...")
+
+        X_batch = X_pred.iloc[i:batch_end]
+
+        # Make predictions for this batch
+        y_pred_batch = model.predict(X_batch)
+        y_pred_proba_batch = model.predict_proba(X_batch)[:, 1]
+
+        all_predictions.extend(y_pred_batch)
+        all_probabilities.extend(y_pred_proba_batch)
+
+        print(f"  ✓ Batch {batch_num} completed")
+
+    print("\n✓ All batches processed successfully")
+
+    # Combine all predictions
+    y_pred = np.array(all_predictions)
+    y_pred_proba = np.array(all_probabilities)
 
     # Create results dataframe
     predictions = pd.DataFrame(
         {
-            "customer_id": X_pred["customer_id"],
-            "product_id": X_pred["product_id"],
-            "week": X_pred["week"],
+            "customer_id": X_pred["customer_id"].values,
+            "product_id": X_pred["product_id"].values,
+            "week": X_pred["week"].values,
             "prediction": y_pred,
             "probability": y_pred_proba,
         }
@@ -285,6 +315,8 @@ def run_prediction_pipeline(
     model_experiment_name: str = None,
     model_fallback_path: str = None,
     output_predictions_path: str = None,
+    max_customers: int = None,
+    batch_size: int = 50000,
 ) -> pd.DataFrame:
     """
     Main function to run complete prediction pipeline (for Airflow task).
@@ -306,6 +338,10 @@ def run_prediction_pipeline(
         Local model path as fallback
     output_predictions_path : str, optional
         Path to save predictions
+    max_customers : int, optional
+        Limit universe to N customers (to reduce memory usage). If None, uses all customers.
+    batch_size : int, optional
+        Batch size for predictions (default: 50000)
 
     Returns
     -------
@@ -329,9 +365,20 @@ def run_prediction_pipeline(
     products_df = pd.read_parquet(products_path)
     historical_df = pd.read_parquet(historical_data_path)
 
-    print(f"Customers: {len(customers_df):,}")
-    print(f"Products: {len(products_df):,}")
+    print(f"Customers (total): {len(customers_df):,}")
+    print(f"Products (total): {len(products_df):,}")
     print(f"Historical data: {len(historical_df):,}")
+
+    # Limit customers if specified (to reduce memory usage)
+    if max_customers is not None and len(customers_df) > max_customers:
+        print(f"\n⚠️  Limiting to {max_customers:,} customers (out of {len(customers_df):,})")
+        print("   This is to reduce memory usage. Remove max_customers param for full universe.")
+        customers_df = customers_df.head(max_customers)
+        print(f"   Using customers: {customers_df['customer_id'].min()} to {customers_df['customer_id'].max()}")
+
+    print(f"\nCustomers (for prediction): {len(customers_df):,}")
+    print(f"Products (for prediction): {len(products_df):,}")
+    print(f"Expected universe size: ~{len(customers_df) * len(products_df):,} pairs")
 
     # Get latest week from historical data
     latest_week = get_latest_week(historical_df)
@@ -341,9 +388,9 @@ def run_prediction_pipeline(
     print(f"\n📅 Creating universe for prediction week: {latest_week + 1}")
     X_pred = create_next_week_universe(customers_df, products_df, latest_week)
 
-    # Generate predictions
+    # Generate predictions with batch processing
     predictions = generate_predictions(
-        model, X_pred, output_path=output_predictions_path
+        model, X_pred, output_path=output_predictions_path, batch_size=batch_size
     )
 
     print("\n" + "=" * 80)
