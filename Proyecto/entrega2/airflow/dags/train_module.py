@@ -212,16 +212,16 @@ def optimize_hyperparameters(
             "n_jobs": -1,
             "tree_method": "hist",  # Much faster and memory efficient
             # Hyperparameters to optimize
-            "max_depth": trial.suggest_int("max_depth", 3, 8),  # Reduced from 10
+            "max_depth": trial.suggest_int("max_depth", 3, 8),  
             "learning_rate": trial.suggest_float(
                 "learning_rate", 0.01, 0.3, log=True
-            ),  # Higher min
+            ), 
             "n_estimators": trial.suggest_int(
                 "n_estimators", 50, 300
-            ),  # Reduced from 500
+            ), 
             "min_child_weight": trial.suggest_int(
                 "min_child_weight", 1, 7
-            ),  # Reduced from 10
+            ),
             "gamma": trial.suggest_float("gamma", 0, 0.3),  # Reduced from 0.5
             "subsample": trial.suggest_float("subsample", 0.7, 1.0),  # Higher min
             "colsample_bytree": trial.suggest_float(

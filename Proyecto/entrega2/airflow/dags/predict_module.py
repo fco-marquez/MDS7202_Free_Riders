@@ -229,9 +229,9 @@ def generate_predictions(
     print("GENERATING PREDICTIONS (BATCH MODE)")
     print("=" * 60)
 
-    pipeline = create_pipeline()
-
-    X_pred = pipeline.transform(X_pred)
+    # Note: The model loaded from MLflow already contains the full preprocessing pipeline
+    # (GeoClusterer + FeatureEngineer + preprocessor + XGBoost model)
+    # So we can use it directly without creating a new pipeline
 
     total_samples = len(X_pred)
     print(f"Total samples: {total_samples:,}")
@@ -255,6 +255,7 @@ def generate_predictions(
         X_batch = X_pred.iloc[i:batch_end]
 
         # Make predictions for this batch
+        # The model's predict/predict_proba will handle all preprocessing internally
         y_pred_batch = model.predict(X_batch)
         y_pred_proba_batch = model.predict_proba(X_batch)[:, 1]
 
@@ -366,6 +367,16 @@ def run_prediction_pipeline(
     customers_df = pd.read_parquet(customers_path)
     products_df = pd.read_parquet(products_path)
     historical_df = pd.read_parquet(historical_data_path)
+
+    # Ensure consistent data types for merge keys
+    if "customer_id" in customers_df.columns:
+        customers_df["customer_id"] = customers_df["customer_id"].astype(int)
+    if "customer_id" in historical_df.columns:
+        historical_df["customer_id"] = historical_df["customer_id"].astype(int)
+    if "product_id" in products_df.columns:
+        products_df["product_id"] = products_df["product_id"].astype(int)
+    if "product_id" in historical_df.columns:
+        historical_df["product_id"] = historical_df["product_id"].astype(int)
 
     # Get unique customers and products from historical data
     customers_df = (

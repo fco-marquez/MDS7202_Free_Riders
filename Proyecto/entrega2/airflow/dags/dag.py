@@ -49,7 +49,7 @@ for directory in [PROCESSED_DATA_DIR, PREDICTIONS_DIR, DRIFT_REPORTS_DIR, MODELS
     directory.mkdir(parents=True, exist_ok=True)
 
 # File paths
-CURRENT_DATA_PATH = RAW_DATA_DIR / "current_data.parquet"
+CURRENT_DATA_PATH = PROCESSED_DATA_DIR / "current_data.parquet"
 FINAL_DATA_PATH = PROCESSED_DATA_DIR / "final_data.parquet"
 TRAIN_DATA_PATH = PROCESSED_DATA_DIR / "train_data.parquet"
 VAL_DATA_PATH = PROCESSED_DATA_DIR / "val_data.parquet"
