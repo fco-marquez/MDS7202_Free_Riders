@@ -238,8 +238,6 @@ def create_pipeline():
         "package",
         "cluster",
         "product_id",
-        "zone_id",
-        "region_id",
     ]
 
     numerical_pipeline = Pipeline(

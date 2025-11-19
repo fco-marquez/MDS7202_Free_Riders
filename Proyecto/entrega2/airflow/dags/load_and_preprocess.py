@@ -119,34 +119,45 @@ def join_data(dfs: Dict[str, pd.DataFrame], output_path: str = None):
         customers_df["customer_id"].isin(customers_with_transactions)
     ]
 
+    # Drop zona_id y region_id de products_df si existen
+    if "zone_id" in products_df.columns:
+        products_df = products_df.drop(columns=["zone_id"])
+    if "region_id" in products_df.columns:
+        products_df = products_df.drop(columns=["region_id"])
+
     # Filtramos productos activos
     products_with_transactions = transactions_df["product_id"].unique()
     products_df = products_df[
         products_df["product_id"].isin(products_with_transactions)
     ]
 
-    customers_df["customer_id"] = customers_df["customer_id"].astype(str)
-    products_df["product_id"] = products_df["product_id"].astype(str)
-    transactions_df["customer_id"] = transactions_df["customer_id"].astype(str)
-    transactions_df["product_id"] = transactions_df["product_id"].astype(str)
+    # Mantener IDs como int para consistencia (NO convertir a string)
+    customers_df["customer_id"] = customers_df["customer_id"].astype("int32")
+    products_df["product_id"] = products_df["product_id"].astype("int32")
+    transactions_df["customer_id"] = transactions_df["customer_id"].astype("int32")
+    transactions_df["product_id"] = transactions_df["product_id"].astype("int32")
     transactions_df["order_id"] = transactions_df["order_id"].astype(str)
-    for frame, cols in [
-        (customers_df, ["customer_id", "customer_type"]),
-        (
-            products_df,
-            ["product_id", "brand", "category", "sub_category", "segment", "package"],
-        ),
-        (transactions_df, ["customer_id", "product_id"]),
-    ]:
-        frame[cols] = frame[cols].astype("category")
+
+    # Convertir a categorías solo las columnas categóricas (NO los IDs)
+    customers_df["customer_type"] = customers_df["customer_type"].astype("category")
+    products_df[["brand", "category", "sub_category", "segment", "package"]] = (
+        products_df[["brand", "category", "sub_category", "segment", "package"]].astype(
+            "category"
+        )
+    )
 
     # Crear universo cliente-producto-semana
     weeks = pd.Series(transactions_df["week"].unique(), name="week")
     weeks = weeks.astype("int16")
+
+    # Obtener IDs únicos
+    unique_customers = transactions_df["customer_id"].unique()
+    unique_products = transactions_df["product_id"].unique()
+
     universe = pd.MultiIndex.from_product(
         [
-            transactions_df["customer_id"].cat.categories,
-            transactions_df["product_id"].cat.categories,
+            unique_customers,
+            unique_products,
             weeks,
         ],
         names=["customer_id", "product_id", "week"],

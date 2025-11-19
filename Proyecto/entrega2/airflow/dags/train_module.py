@@ -55,9 +55,11 @@ from mlflow_config import (
 from pipeline import create_pipeline
 
 # Configuration from environment
-TRAIN_SAMPLE_FRAC = float(os.getenv("TRAIN_SAMPLE_FRAC", "0.2"))  # Default 20%
-VAL_SAMPLE_FRAC = float(os.getenv("VAL_SAMPLE_FRAC", "0.3"))  # Default 30%
-SHAP_SAMPLE_SIZE = int(os.getenv("SHAP_SAMPLE_SIZE", "500"))  # Reduced from 1000
+TRAIN_SAMPLE_FRAC = float(os.getenv("TRAIN_SAMPLE_FRAC", "0.2"))
+VAL_SAMPLE_FRAC = float(os.getenv("VAL_SAMPLE_FRAC", "0.3"))
+SHAP_SAMPLE_SIZE = int(os.getenv("SHAP_SAMPLE_SIZE", "500"))
+IMBALANCE_RATIO_THRESHOLD = float(os.getenv("IMBALANCE_RATIO_THRESHOLD", "8"))
+N_JOBS = int(os.getenv("N_JOBS", "-1"))
 
 
 def load_train_val_data(
@@ -114,10 +116,63 @@ def load_train_val_data(
     X_val = val_df.drop(columns=["bought"])
     y_val = val_df["bought"]
 
-    # Print class distribution
-    print("\nClass distribution in training set:")
+    # Print initial class distribution
+    print("\nInitial class distribution in training set:")
     print(y_train.value_counts())
-    print(f"Class imbalance ratio: {(y_train == 0).sum() / (y_train == 1).sum():.2f}:1")
+
+    n_positive = (y_train == 1).sum()
+    n_negative = (y_train == 0).sum()
+
+    # Handle edge case: no positive samples
+    if n_positive == 0:
+        raise ValueError("No positive samples found in training data!")
+
+    # Subsample if imbalance ratio is too high (IMBALANCE_RATIO_THRESHOLD)
+    imbalance_ratio = n_negative / n_positive
+
+    if imbalance_ratio > IMBALANCE_RATIO_THRESHOLD:
+        print(
+            f"\nImbalance ratio {imbalance_ratio:.2f} exceeds threshold {IMBALANCE_RATIO_THRESHOLD}. Subsampling majority class..."
+        )
+
+        minority_indices = y_train[y_train == 1].index
+        majority_indices = y_train[y_train == 0].index
+
+        # Calculate number of majority samples to keep
+        n_minority = len(minority_indices)
+        n_majority_to_keep = int(n_minority * IMBALANCE_RATIO_THRESHOLD)
+
+        # Ensure we don't try to sample more than available
+        n_majority_to_keep = min(n_majority_to_keep, len(majority_indices))
+
+        # Randomly sample majority class indices (with seed for reproducibility)
+        np.random.seed(42)
+        sampled_majority_indices = np.random.choice(
+            majority_indices, size=n_majority_to_keep, replace=False
+        )
+
+        # Combine minority indices with sampled majority indices
+        selected_indices = np.concatenate([minority_indices, sampled_majority_indices])
+
+        # Shuffle indices to avoid ordered pattern (minority first, then majority)
+        np.random.seed(42)
+        np.random.shuffle(selected_indices)
+
+        # Subset training data
+        X_train = X_train.loc[selected_indices]
+        y_train = y_train.loc[selected_indices]
+
+        print(f"After subsampling, training set size: {len(y_train):,}")
+        print(f"  New class distribution:")
+        print(f"    Class 0: {(y_train == 0).sum():,}")
+        print(f"    Class 1: {(y_train == 1).sum():,}")
+        print(
+            f"  New imbalance ratio: {(y_train == 0).sum() / (y_train == 1).sum():.2f}:1"
+        )
+    else:
+        print(
+            f"Imbalance ratio {imbalance_ratio:.2f} within acceptable range. No subsampling applied."
+        )
 
     return X_train, y_train, X_val, y_val
 
@@ -203,32 +258,28 @@ def optimize_hyperparameters(
 
     # Objective function for Optuna
     def objective(trial):
-        # Suggest hyperparameters
+        # Suggest hyperparameters - OPTIMIZED GRID (only most important params)
+        scale_pos_weight = IMBALANCE_RATIO_THRESHOLD
+        n_jobs = N_JOBS
+
         params = {
+            # --- Parámetros Fijos (Eficiencia y Entorno) ---
             "objective": "binary:logistic",
             "eval_metric": "aucpr",
             "scale_pos_weight": scale_pos_weight,
+            "tree_method": "hist",
             "random_state": 42,
-            "n_jobs": -1,
-            "tree_method": "hist",  # Much faster and memory efficient
-            # Hyperparameters to optimize
-            "max_depth": trial.suggest_int("max_depth", 3, 8),  
-            "learning_rate": trial.suggest_float(
-                "learning_rate", 0.01, 0.3, log=True
-            ), 
-            "n_estimators": trial.suggest_int(
-                "n_estimators", 50, 300
-            ), 
-            "min_child_weight": trial.suggest_int(
-                "min_child_weight", 1, 7
-            ),
-            "gamma": trial.suggest_float("gamma", 0, 0.3),  # Reduced from 0.5
-            "subsample": trial.suggest_float("subsample", 0.7, 1.0),  # Higher min
-            "colsample_bytree": trial.suggest_float(
-                "colsample_bytree", 0.7, 1.0
-            ),  # Higher min
-            "reg_alpha": trial.suggest_float("reg_alpha", 0, 0.5),  # Reduced from 1.0
-            "reg_lambda": trial.suggest_float("reg_lambda", 0, 0.5),  # Reduced from 1.0
+            # Adjust to the resources of your Docker container.
+            # Avoid using -1 to prevent CPU overhead in limited containers.
+            "n_jobs": n_jobs,
+            "max_depth": trial.suggest_int("max_depth", 3, 6),
+            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.1, log=True),
+            "min_child_weight": trial.suggest_int("min_child_weight", 1, 7),
+            "subsample": trial.suggest_float("subsample", 0.6, 0.9),
+            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 0.9),
+            "gamma": 1.0,
+            "reg_alpha": 0.5,
+            "reg_lambda": 1.0,  # L2 default
         }
 
         # Start MLflow run
@@ -317,15 +368,6 @@ def optimize_hyperparameters(
 
     # Add fixed parameters to best params
     best_params = study.best_params.copy()
-    best_params.update(
-        {
-            "objective": "binary:logistic",
-            "eval_metric": "aucpr",
-            "scale_pos_weight": scale_pos_weight,
-            "random_state": 42,
-            "n_jobs": -1,
-        }
-    )
 
     return best_params
 

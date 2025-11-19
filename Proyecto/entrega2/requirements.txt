@@ -9,7 +9,7 @@ scikit-learn==1.5.2
 
 # MLflow and Experiment Tracking
 mlflow==2.17.2
-
+pynvml>=13.0.1
 # Hyperparameter Optimization
 optuna==4.1.0
 optuna-integration[xgboost]==4.1.0

@@ -70,130 +70,182 @@ DRIFT_THRESHOLD = float(os.getenv("DRIFT_THRESHOLD", "0.3"))
 # ============================================================================
 
 
-def extract_new_data(**context):
+def ingest_and_preprocess(**context):
     """
-    Extract new data (placeholder for actual data extraction).
-
-    In production, this would:
-    - Check for new data files in a specific location
-    - Download from database or API
-    - Validate data schema
-
-    For now, it assumes data is already in the raw folder.
+    Ingest raw data and preprocess in a single step.
+    Handles both historical data and new parquet fragments.
     """
     print("=" * 60)
-    print("EXTRACTING NEW DATA")
+    print("INGESTING AND PREPROCESSING DATA")
     print("=" * 60)
 
-    # Check if raw data exists
-    if not RAW_DATA_DIR.exists():
-        raise FileNotFoundError(f"Raw data directory not found: {RAW_DATA_DIR}")
+    # Ensure directories exist
+    RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
+    # Get configuration from dag_run.conf
+    dag_run = context.get("dag_run")
+    conf = getattr(dag_run, "conf", {}) or {}
+    new_parquet_paths = conf.get("new_parquet_paths")  # List of new fragment paths
+
+    new_data_arrived = False
+
+    # Copy new parquet fragments if provided
+    if new_parquet_paths:
+        print(f"New parquet fragments received: {new_parquet_paths}")
+        for p in new_parquet_paths:
+            try:
+                src = Path(p)
+                if not src.exists():
+                    print(f"File not found: {p}")
+                    continue
+                dest = RAW_DATA_DIR / src.name
+                shutil.copyfile(src, dest)
+                print(f"Copied {src.name} to {RAW_DATA_DIR}")
+                new_data_arrived = True
+            except Exception as e:
+                print(f"Error copying {p}: {e}")
+
+    # Verify raw data exists
     raw_files = list(RAW_DATA_DIR.glob("*.parquet"))
-    print(f"Found {len(raw_files)} raw data files:")
-    for file in raw_files:
-        print(f"  - {file.name}")
+    print(f"\nFound {len(raw_files)} total parquet file(s) in {RAW_DATA_DIR}")
 
     if len(raw_files) == 0:
-        raise FileNotFoundError("No raw data files found!")
+        raise FileNotFoundError(f"No raw data files in {RAW_DATA_DIR}!")
 
-    print("\n✓ Data extraction completed")
+    # Determine output path based on whether this is first run
+    if not CURRENT_DATA_PATH.exists():
+        # First run: create current_data.parquet
+        output_path = CURRENT_DATA_PATH
+        print("\nNew first run detected - creating initial dataset")
+    else:
+        # Subsequent run: create final_data.parquet for comparison
+        output_path = FINAL_DATA_PATH
+        print("\nUpdating dataset with new data")
+
+    # Run preprocessing pipeline
+
+    run_preprocessing_pipeline(
+        raw_data_folder=str(RAW_DATA_DIR),
+        output_data_path=str(output_path),
+        static_data_folder=str(STATIC_DATA_DIR),
+    )
+
+    # Push flags to XCom
+    context["task_instance"].xcom_push(key="new_data_arrived", value=new_data_arrived)
+    context["task_instance"].xcom_push(key="output_path", value=str(output_path))
+
+    print(f"\n✓ Data saved to: {output_path}")
     print("=" * 60)
 
 
-def preprocess_data(**context):
+def split_and_prepare_training(**context):
     """
-    Preprocess raw data: clean, transform, and create universe.
+    Split data into train/validation sets.
+    Uses CURRENT_DATA_PATH (reference data after potential update).
     """
-    # Check if the is current data file exists
+    print("=" * 60)
+    print("SPLITTING DATA FOR TRAINING")
+    print("=" * 60)
+
+    # Use CURRENT_DATA_PATH as the source (updated in decide_retrain if needed)
     if not CURRENT_DATA_PATH.exists():
-        Warning(
-            f"Current data file not found: {CURRENT_DATA_PATH}. First time running the dag, no need to detect drift."
-        )
-        run_preprocessing_pipeline(
-            raw_data_folder=str(RAW_DATA_DIR),
-            output_data_path=str(CURRENT_DATA_PATH),
-            static_data_folder=str(STATIC_DATA_DIR),
-        )
-    else:
-        run_preprocessing_pipeline(
-            raw_data_folder=str(RAW_DATA_DIR),
-            output_data_path=str(FINAL_DATA_PATH),
-            static_data_folder=str(STATIC_DATA_DIR),
-        )
+        raise FileNotFoundError(f"Current data not found: {CURRENT_DATA_PATH}")
 
-
-def split_data(**context):
-    """
-    Split processed data into train, validation, and test sets.
-    """
     run_data_splitting(
         input_data_path=str(CURRENT_DATA_PATH), output_dir=str(PROCESSED_DATA_DIR)
     )
 
+    print(f"\n✓ Train/Val data saved to {PROCESSED_DATA_DIR}")
+    print("=" * 60)
 
-def detect_drift(**context):
+
+def detect_drift_and_decide(**context):
     """
-    Detect drift in new data compared to reference data.
-    """
-    execution_date = context["ds"]
-    drift_report_path = str(DRIFT_REPORT_PATH).format(execution_date=execution_date)
-    if not FINAL_DATA_PATH.exists():
-        Warning(
-            f"Final data file not found: {FINAL_DATA_PATH}. First time running the dag, no need to detect drift."
-        )
-        needs_retrain = True
-        needs_retrain
-    else:
-        needs_retrain = run_drift_detection(
-            reference_data_path=str(CURRENT_DATA_PATH),
-            current_data_path=str(FINAL_DATA_PATH),
-            output_report_path=drift_report_path,
-        )
-
-    # Push result to XCom for branching
-    context["task_instance"].xcom_push(key="needs_retrain", value=needs_retrain)
-
-    return needs_retrain
-
-
-def decide_retrain(**context):
-    """
-    Branching decision: retrain if drift detected OR no model exists, skip otherwise.
+    Detect drift and decide whether to retrain.
+    Returns task_id for branching: 'split_and_train' or 'skip_retrain'
     """
     ti = context["task_instance"]
-    needs_retrain = ti.xcom_pull(task_ids="detect_drift", key="needs_retrain")
+    execution_date = context["ds"]
+
+    print("=" * 60)
+    print("DRIFT DETECTION & RETRAINING DECISION")
+    print("=" * 60)
 
     # Check if model exists
     model_exists = MODEL_PATH.exists()
-
-    print("=" * 60)
-    print("RETRAINING DECISION")
-    print("=" * 60)
-    print(f"Drift detected: {needs_retrain}")
     print(f"Model exists: {model_exists}")
 
-    # Retrain if drift detected OR no model exists (first run)
-    if needs_retrain or not model_exists:
-        # Save current data as reference for next run
-        shutil.copyfile(FINAL_DATA_PATH, CURRENT_DATA_PATH)
-        if not model_exists:
-            print("→ Reason: No existing model found (first run)")
-        else:
-            print("→ Reason: Drift detected")
-        print("→ Decision: RETRAIN MODEL")
+    # If no model, must train (first run)
+    if not model_exists:
+        print("\nNo existing model → MUST TRAIN")
         print("=" * 60)
-        return "split_data"
+        return "split_and_train"
+
+    # Check if new data arrived in this run
+    new_data_arrived = ti.xcom_pull(
+        task_ids="ingest_and_preprocess", key="new_data_arrived"
+    )
+    print(f"New data arrived: {new_data_arrived}")
+
+    # If no new data, use existing model
+    if not new_data_arrived:
+        print("\nNo new transactions → Use existing model")
+        print("=" * 60)
+        return "skip_retrain"
+
+    # New data arrived: check for drift
+    if not FINAL_DATA_PATH.exists():
+        print("\nFinal data not found → RETRAIN")
+        # Update reference data
+        shutil.copyfile(CURRENT_DATA_PATH, CURRENT_DATA_PATH)
+        print("=" * 60)
+        return "split_and_train"
+
+    # Run drift detection
+    print("\n🔍 Running drift detection...")
+    drift_report_path = str(DRIFT_REPORT_PATH).format(execution_date=execution_date)
+
+    drift_detected = run_drift_detection(
+        reference_data_path=str(CURRENT_DATA_PATH),
+        current_data_path=str(FINAL_DATA_PATH),
+        output_report_path=drift_report_path,
+    )
+
+    print(f"Drift detected: {drift_detected}")
+
+    if drift_detected:
+        print("\nDRIFT DETECTED → RETRAIN")
+        # Update reference data for next run
+        shutil.copyfile(FINAL_DATA_PATH, CURRENT_DATA_PATH)
+        print(f"Updated reference data: {CURRENT_DATA_PATH}")
+        print("=" * 60)
+        return "split_and_train"
     else:
-        print("→ Decision: SKIP RETRAINING")
+        print("\nNo significant drift → Use existing model")
         print("=" * 60)
         return "skip_retrain"
 
 
-def train_model(**context):
+def split_and_train(**context):
     """
-    Train model with hyperparameter optimization using Optuna and MLflow.
+    Split data and train model in a single optimized step.
     """
+    print("=" * 60)
+    print("SPLITTING DATA & TRAINING MODEL")
+    print("=" * 60)
+
+    # Step 1: Split data
+    print("\nStep 1: Splitting data...")
+    from pipeline import run_data_splitting
+
+    run_data_splitting(
+        input_data_path=str(CURRENT_DATA_PATH), output_dir=str(PROCESSED_DATA_DIR)
+    )
+    print(f"Train/Val splits saved to {PROCESSED_DATA_DIR}")
+
+    # Step 2: Train model
+    print("\nStep 2: Training model...")
+
     pipeline = run_full_training(
         train_data_path=str(TRAIN_DATA_PATH),
         val_data_path=str(VAL_DATA_PATH),
@@ -202,6 +254,7 @@ def train_model(**context):
     )
 
     print(f"\nModel saved to: {MODEL_PATH}")
+    print("=" * 60)
 
 
 def generate_predictions(**context):
@@ -226,12 +279,12 @@ def generate_predictions(**context):
         model_experiment_name=MLFLOW_EXPERIMENT,
         model_fallback_path=str(MODEL_PATH),
         output_predictions_path=predictions_path,
-        max_customers=100,  # Limit to 100 customers (~97K predictions instead of 1.5M)
+        max_customers=None,  # Limit to 100 customers (~97K predictions instead of 1.5M)
         batch_size=20000,  # Process 20K rows at a time
     )
 
-    print(f"\n✓ Predictions saved to: {predictions_path}")
-    print(f"✓ Generated {len(predictions):,} predictions")
+    print(f"\nPredictions saved to: {predictions_path}")
+    print(f"Generated {len(predictions):,} predictions")
 
 
 # ============================================================================
@@ -269,21 +322,12 @@ with DAG(
         """,
     )
 
-    extract = PythonOperator(
-        task_id="extract_new_data",
-        python_callable=extract_new_data,
+    ingest_preprocess = PythonOperator(
+        task_id="ingest_and_preprocess",
+        python_callable=ingest_and_preprocess,
         doc_md="""
-        ### Extract New Data
-        Checks for and validates new raw data files.
-        In production, this would fetch data from external sources.
-        """,
-    )
-
-    preprocess = PythonOperator(
-        task_id="preprocess_data",
-        python_callable=preprocess_data,
-        doc_md="""
-        ### Preprocess Data
+        ### Ingest & Preprocess Data
+        - Handles new parquet fragments from dag_run.conf
         - Loads raw data (customers, products, transactions)
         - Cleans transactions (remove duplicates, filter invalid items)
         - Optimizes datatypes
@@ -292,54 +336,30 @@ with DAG(
         """,
     )
 
-    split = PythonOperator(
-        task_id="split_data",
-        python_callable=split_data,
-        doc_md="""
-        ### Split Data
-        Splits processed data into train (80%) and validation (20%) sets.
-        Respects temporal ordering to prevent data leakage.
-        
-        NO test set is created - predictions will be made for the NEXT WEEK
-        after the most recent data, following project requirements.
-        """,
-    )
-
-    drift_detection = PythonOperator(
-        task_id="detect_drift",
-        python_callable=detect_drift,
-        doc_md="""
-        ### Detect Drift
-        Performs statistical drift detection:
-        - KS test for numerical features
-        - Chi-square test for categorical features
-        - Generates drift report
-        - Determines if retraining is needed
-        """,
-    )
-
     branch = BranchPythonOperator(
-        task_id="decide_retrain",
-        python_callable=decide_retrain,
+        task_id="detect_drift_and_decide",
+        python_callable=detect_drift_and_decide,
         doc_md="""
-        ### Branching Decision
-        Decides whether to retrain the model based on drift detection results.
-        - If drift detected → split -> train_model
-        - If no drift → skip_retrain
+        ### Drift Detection & Branching
+        Intelligent decision logic:
+        1. No model exists → TRAIN (first run)
+        2. No new data → SKIP (use existing model)
+        3. New data arrived → Check drift:
+           - Drift detected → RETRAIN
+           - No drift → SKIP
         """,
     )
 
-    train = PythonOperator(
-        task_id="train_model",
-        python_callable=train_model,
+    split_train_task = PythonOperator(
+        task_id="split_and_train",
+        python_callable=split_and_train,
         doc_md="""
-        ### Train Model
-        Full model training pipeline:
-        1. Hyperparameter optimization with Optuna (50 trials)
-        2. Train XGBoost model with best parameters
-        3. Track experiments with MLflow
-        4. Generate SHAP interpretability plots
-        5. Save model to MLflow and locally
+        ### Split Data & Train Model
+        - Splits data into train (80%) / val (20%)
+        - Runs hyperparameter optimization with Optuna
+        - Trains XGBoost model
+        - Logs to MLflow
+        - Saves best model
         """,
     )
 
@@ -383,14 +403,14 @@ with DAG(
     # TASK DEPENDENCIES
     # ========================================================================
 
-    # Linear flow until branching
-    start >> extract >> preprocess >> drift_detection >> branch
+    # Simplified linear flow with intelligent branching
+    start >> ingest_preprocess >> branch
 
-    # Branching: retrain or skip
-    branch >> [split, skip]
+    # Branch: retrain or skip
+    branch >> [split_train_task, skip]
 
-    skip >> predict >> end
-    split >> train >> predict >> end
+    # Both paths converge to prediction
+    [split_train_task, skip] >> predict >> end
 
 
 # ============================================================================

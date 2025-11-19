@@ -116,17 +116,30 @@ def create_next_week_universe(
     print(f"\nCustomers columns: {customers_df.columns.tolist()}")
     print(f"Products columns: {products_df.columns.tolist()}")
 
-    # Create cartesian product
+    # Create cartesian product (all customer-product combinations)
     customers_copy = customers_df.copy()
     products_copy = products_df.copy()
 
-    customers_copy["key"] = 1
-    products_copy["key"] = 1
+    # Add temporary key for cross join
+    customers_copy["_merge_key"] = 1
+    products_copy["_merge_key"] = 1
 
-    universe = customers_copy.merge(products_copy, on="key", how="outer").drop(
-        columns=["key"]
-    )
+    # Perform cartesian product
+    universe = customers_copy.merge(
+        products_copy,
+        on="_merge_key",
+        how="outer",
+        suffixes=("", "_product"),  # Avoid column name conflicts
+    ).drop(columns=["_merge_key"])
+
+    # Add week for prediction
     universe["week"] = next_week
+
+    # Ensure critical ID columns are present
+    if "customer_id" not in universe.columns:
+        raise ValueError("customer_id column missing after merge!")
+    if "product_id" not in universe.columns:
+        raise ValueError("product_id column missing after merge!")
 
     # Verify critical columns exist
     print(f"\nUniverse columns after merge: {universe.columns.tolist()}")
@@ -238,29 +251,41 @@ def generate_predictions(
     print(f"Batch size: {batch_size:,}")
     print(f"Number of batches: {(total_samples + batch_size - 1) // batch_size}")
 
-    # Store predictions
+    # Store predictions efficiently
     all_predictions = []
     all_probabilities = []
 
     # Process in batches to avoid memory issues
+    total_batches = (total_samples + batch_size - 1) // batch_size
+
     for i in range(0, total_samples, batch_size):
         batch_end = min(i + batch_size, total_samples)
         batch_num = (i // batch_size) + 1
-        total_batches = (total_samples + batch_size - 1) // batch_size
 
         print(
             f"\nProcessing batch {batch_num}/{total_batches} (rows {i:,} to {batch_end:,})..."
         )
 
-        X_batch = X_pred.iloc[i:batch_end]
+        # Get batch
+        X_batch = X_pred.iloc[i:batch_end].copy()
 
         # Make predictions for this batch
-        # The model's predict/predict_proba will handle all preprocessing internally
-        y_pred_batch = model.predict(X_batch)
-        y_pred_proba_batch = model.predict_proba(X_batch)[:, 1]
+        # The model pipeline handles all preprocessing internally:
+        # GeoClusterer → FeatureEngineer → Preprocessor → XGBoost
+        try:
+            y_pred_batch = model.predict(X_batch)
+            y_pred_proba_batch = model.predict_proba(X_batch)[:, 1]
+        except Exception as e:
+            print(f"  ✗ Error in batch {batch_num}: {e}")
+            print(f"  Batch shape: {X_batch.shape}")
+            print(f"  Batch columns: {X_batch.columns.tolist()}")
+            raise
 
-        all_predictions.extend(y_pred_batch)
-        all_probabilities.extend(y_pred_proba_batch)
+        all_predictions.extend(y_pred_batch.tolist())
+        all_probabilities.extend(y_pred_proba_batch.tolist())
+
+        # Free memory
+        del X_batch, y_pred_batch, y_pred_proba_batch
 
         print(f"  ✓ Batch {batch_num} completed")
 
@@ -270,16 +295,60 @@ def generate_predictions(
     y_pred = np.array(all_predictions)
     y_pred_proba = np.array(all_probabilities)
 
-    # Create results dataframe
+    # Create results dataframe with essential columns
+    # Extract customer_id and product_id safely (handle if they're in different positions after pipeline transform)
+    try:
+        customer_ids = (
+            X_pred["customer_id"].values
+            if "customer_id" in X_pred.columns
+            else X_pred.index.get_level_values("customer_id")
+        )
+        product_ids = (
+            X_pred["product_id"].values
+            if "product_id" in X_pred.columns
+            else X_pred.index.get_level_values("product_id")
+        )
+        weeks = (
+            X_pred["week"].values
+            if "week" in X_pred.columns
+            else np.repeat(X_pred["week"].iloc[0], len(X_pred))
+        )
+    except:
+        # Fallback: reconstruct from input dataframe
+        print(
+            "Warning: Could not extract IDs from transformed data, using original indices"
+        )
+        customer_ids = (
+            X_pred.reset_index()["customer_id"].values
+            if "customer_id" in X_pred.reset_index().columns
+            else range(len(X_pred))
+        )
+        product_ids = (
+            X_pred.reset_index()["product_id"].values
+            if "product_id" in X_pred.reset_index().columns
+            else range(len(X_pred))
+        )
+        weeks = (
+            X_pred.reset_index()["week"].values
+            if "week" in X_pred.reset_index().columns
+            else np.repeat(0, len(X_pred))
+        )
+
     predictions = pd.DataFrame(
         {
-            "customer_id": X_pred["customer_id"].values,
-            "product_id": X_pred["product_id"].values,
-            "week": X_pred["week"].values,
+            "customer_id": customer_ids,
+            "product_id": product_ids,
+            "week": weeks,
             "prediction": y_pred,
             "probability": y_pred_proba,
         }
     )
+
+    # Clean memory
+    del all_predictions, all_probabilities, y_pred, y_pred_proba
+    import gc
+
+    gc.collect()
 
     # Summary statistics
     print("\nPrediction Summary:")
@@ -397,7 +466,7 @@ def run_prediction_pipeline(
     # Limit customers if specified (to reduce memory usage)
     if max_customers is not None and len(customers_df) > max_customers:
         print(
-            f"\n⚠️  Limiting to {max_customers:,} customers (out of {len(customers_df):,})"
+            f"\nLimiting to {max_customers:,} customers (out of {len(customers_df):,})"
         )
         print(
             "   This is to reduce memory usage. Remove max_customers param for full universe."
@@ -416,15 +485,22 @@ def run_prediction_pipeline(
 
     # Create universe for NEXT WEEK (latest_week + 1)
     # This follows the requirement: "predict for the week following the most recent in the data"
-    print(f"\n📅 Creating universe for prediction week: {latest_week + 1}")
-    X__raw = create_next_week_universe(customers_df, products_df, latest_week)
+    print(f"\nCreating universe for prediction week: {latest_week + 1}")
+    universe = create_next_week_universe(customers_df, products_df, latest_week)
 
-    # Merge historical data to enable feature engineering
-    X_combined = merge_historical_data_for_features(X__raw, historical_df)
+    # NOTE: We do NOT merge with historical data here!
+    # The model pipeline (loaded from MLflow/pkl) already contains:
+    # 1. GeoClusterer (creates geographic features)
+    # 2. FeatureEngineer (creates recency/frequency/monetary features from historical patterns)
+    # 3. Preprocessor (scaling, encoding)
+    # 4. XGBoost model
+    # So we just pass the raw universe and let the pipeline handle everything.
+
+    print(f"\nUniverse ready for prediction: {len(universe):,} rows")
 
     # Generate predictions with batch processing
     predictions = generate_predictions(
-        model, X_combined, output_path=output_predictions_path, batch_size=batch_size
+        model, universe, output_path=output_predictions_path, batch_size=batch_size
     )
 
     print("\n" + "=" * 80)
