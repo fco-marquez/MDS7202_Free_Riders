@@ -196,9 +196,10 @@ def run_preprocessing_pipeline(
     print("DATA PREPROCESSING PIPELINE")
     print("=" * 60)
     print(f"Loading data from: {raw_data_folder}")
+    print(f"Static data from: {static_data_folder}")
 
     # Load data
-    data_frames = load_data(raw_data_folder)
+    data_frames = load_data(raw_data_folder, static_data_folder)
 
     # Preprocess transactions
     print("\nPreprocessing transactions...")
