@@ -1,7 +1,3 @@
-"""
-FastAPI Backend for SODAI Drinks Prediction System
-Provides endpoints for predictions and recommendations.
-"""
 import logging
 from contextlib import asynccontextmanager
 from typing import List, Optional

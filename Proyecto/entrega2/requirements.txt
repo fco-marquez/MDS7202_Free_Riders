@@ -39,3 +39,6 @@ tqdm==4.67.1
 
 # Class Imbalance
 imbalanced-learn==0.12.4
+
+# others
+dill==0.4.0

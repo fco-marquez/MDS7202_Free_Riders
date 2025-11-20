@@ -450,7 +450,7 @@ Raw Data → Preprocessing → Drift Detection
 - **Training ratio**: 80% train, 20% validation (no test set)
 - **Optuna trials**: 50
 - **Model**: XGBoost with class balancing
-- **Primary metric**: Recall (detect purchases)
+- **Primary metric**: F1-score
 - **Drift threshold**: 30% of features showing drift
 - **Predictions**: For week N+1 (where N = latest week in data)
 

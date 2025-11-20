@@ -159,9 +159,3 @@ Este proyecto demostró que implementar un sistema MLOps completo es mucho más 
 - **Pensamiento end-to-end**: Es fundamental diseñar desde el inicio considerando todo el ciclo de vida del modelo, no solo el entrenamiento.
 
 Este proyecto sienta las bases para un sistema de producción real, con las herramientas y buenas prácticas necesarias para escalar y mantener el sistema a largo plazo.
-
----
-
-**Proyecto desarrollado para MDS7202 - Laboratorio de Programación Científica para Ciencia de Datos**
-**Entrega 2: Pipelines Productivos y Aplicación Web**
-**Fecha:** Noviembre 2025

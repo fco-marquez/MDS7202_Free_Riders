@@ -12,13 +12,16 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
-COPY requirements.txt .
+COPY app/backend/requirements.txt .
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
-COPY . .
+# Copy application code from backend
+COPY app/backend/ .
+
+# Copy recommender from bonus/recsys folder
+COPY bonus/recsys/recommender.py .
 
 # Expose port
 EXPOSE 8000

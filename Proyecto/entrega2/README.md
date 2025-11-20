@@ -1,8 +1,4 @@
-# SodAI Drinks - ML Prediction Pipeline
-
 **Equipo:** Free Riders
-**Curso:** MDS7202 - Laboratorio de Programación Científica para Ciencia de Datos
-**Entrega:** 2 - Pipeline Automatizado con Airflow
 
 ---
 

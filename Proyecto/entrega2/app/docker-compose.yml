@@ -6,8 +6,8 @@ services:
   # ============================================================================
   backend:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: app/backend/Dockerfile
     container_name: sodai_app_backend
     ports:
       - "8000:8000"
