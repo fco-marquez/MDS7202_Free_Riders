@@ -1,0 +1,211 @@
+# SodAI Drinks Prediction Pipeline - Docker Compose Configuration
+# ================================================================
+# This docker-compose file orchestrates the complete SODAI system:
+# - Airflow (webserver + scheduler in standalone mode)
+# - MLflow UI (for experiment tracking)
+# - PostgreSQL (Airflow metadata database)
+# - FastAPI Backend (prediction API)
+# - Gradio Frontend (user interface)
+
+services:
+  # PostgreSQL - Airflow Metadata Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: sodai_postgres
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+    networks:
+      - sodai_network
+
+  # Airflow Standalone (Webserver + Scheduler + Triggerer)
+  airflow:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sodai_airflow
+    user: "50000:0" # Run as airflow user (UID 50000)
+    depends_on:
+      postgres:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 8G # Aumentar de 4G default a 8G
+        reservations:
+          memory: 4G
+    environment:
+      # Core
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
+      - AIRFLOW__CORE__FERNET_KEY=${AIRFLOW__CORE__FERNET_KEY}
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=False
+
+      # Webserver
+      - AIRFLOW__WEBSERVER__EXPOSE_CONFIG=True
+      - AIRFLOW__WEBSERVER__SECRET_KEY=${AIRFLOW__WEBSERVER__SECRET_KEY}
+
+      # Scheduler
+      - AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL=30
+
+      # MLflow
+      - MLFLOW_TRACKING_URI=${MLFLOW_TRACKING_URI}
+
+      # Admin user (created on first run)
+      - _AIRFLOW_WWW_USER_CREATE=True
+      - _AIRFLOW_WWW_USER_USERNAME=${_AIRFLOW_WWW_USER_USERNAME}
+      - _AIRFLOW_WWW_USER_PASSWORD=${_AIRFLOW_WWW_USER_PASSWORD}
+
+      # Model configuration
+      - N_OPTUNA_TRIALS=${N_OPTUNA_TRIALS}
+      - DRIFT_THRESHOLD=${DRIFT_THRESHOLD}
+      - MLFLOW_EXPERIMENT_NAME=${MLFLOW_EXPERIMENT_NAME}
+      - TRAIN_SAMPLE_FRAC=${TRAIN_SAMPLE_FRAC}
+      - VAL_SAMPLE_FRAC=${VAL_SAMPLE_FRAC}
+      - SHAP_SAMPLE_SIZE=${SHAP_SAMPLE_SIZE}
+
+      # Python
+      - PYTHONPATH=/opt/airflow/dags
+    volumes:
+      # DAGs and modules (read-write for hot reload)
+      - ./airflow/dags:/opt/airflow/dags
+
+      # Data (persistent)
+      - ./airflow/data:/opt/airflow/data
+
+      # MLflow runs (persistent) - SAME PATH AS MLFLOW SERVICE
+      - ./airflow/mlflow_data:/mlflow
+
+      # Models (persistent)
+      - ./airflow/models:/opt/airflow/models
+
+      # Predictions (persistent)
+      - ./airflow/predictions:/opt/airflow/predictions
+
+      # Drift reports (persistent)
+      - ./airflow/drift_reports:/opt/airflow/drift_reports
+
+      # Logs (persistent)
+      - airflow_logs:/opt/airflow/logs
+
+      # Utility scripts
+      - ./generate_test_data.py:/opt/airflow/generate_test_data.py
+    ports:
+      - "8080:8080" # Airflow UI
+    command: >
+      bash -c "
+        airflow db migrate &&
+        airflow users create --username ${_AIRFLOW_WWW_USER_USERNAME} --password ${_AIRFLOW_WWW_USER_PASSWORD} --firstname Admin --lastname User --role Admin --email admin@example.com || true &&
+        airflow standalone
+      "
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+    networks:
+      - sodai_network
+
+  # MLflow UI Server
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.17.2
+    container_name: sodai_mlflow
+    user: "50000:0" # Same user as airflow for consistent permissions
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./airflow/mlflow_data:/mlflow
+    command: >
+      mlflow server
+      --backend-store-uri file:///mlflow
+      --default-artifact-root file:///mlflow/artifacts
+      --host 0.0.0.0
+      --port 5000
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health').read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - sodai_network
+
+  # ============================================================================
+  # Backend - FastAPI Prediction API
+  # ============================================================================
+  backend:
+    build:
+      context: .
+      dockerfile: app/backend/Dockerfile
+    container_name: sodai_app_backend
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount data directories from Airflow (read-only)
+      - ./airflow/data:/data:ro
+      - ./airflow/models:/models:ro
+      - ./airflow/mlflow_data:/mlflow:ro
+    environment:
+      # MLflow configuration
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLFLOW_EXPERIMENT_NAME: sodai_drinks_prediction
+      # Model path
+      MODEL_PATH: /models/best_model.pkl
+    networks:
+      - sodai_network
+    depends_on:
+      mlflow:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # ============================================================================
+  # Frontend - Gradio User Interface
+  # ============================================================================
+  frontend:
+    build:
+      context: ./app/frontend
+      dockerfile: Dockerfile
+    container_name: sodai_app_frontend
+    ports:
+      - "7860:7860"
+    environment:
+      # Backend URL
+      BACKEND_URL: http://backend:8000
+    networks:
+      - sodai_network
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+# Volumes for data persistence
+volumes:
+  postgres_data:
+    name: sodai_postgres_data
+  airflow_logs:
+    name: sodai_airflow_logs
+
+# Network
+networks:
+  sodai_network:
+    name: sodai_network
+    driver: bridge
