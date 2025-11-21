@@ -1,0 +1,81 @@
+{
+  "timestamp": "2025-11-11T23:58:52.825651",
+  "reference_data_shape": [
+    10000,
+    17
+  ],
+  "current_data_shape": [
+    10000,
+    17
+  ],
+  "total_features_monitored": 9,
+  "features_with_drift": 3,
+  "drift_ratio": 0.3333333333333333,
+  "drift_threshold": 0.3,
+  "needs_retrain": true,
+  "feature_statistics": {
+    "size": {
+      "test": "kolmogorov_smirnov",
+      "statistic": 0.0071,
+      "p_value": 0.9626361027684857,
+      "drift_detected": false,
+      "threshold": 0.05
+    },
+    "num_deliver_per_week": {
+      "test": "kolmogorov_smirnov",
+      "statistic": 0.0008,
+      "p_value": 1.0,
+      "drift_detected": false,
+      "threshold": 0.05
+    },
+    "num_visit_per_week": {
+      "test": "kolmogorov_smirnov",
+      "statistic": 0.0,
+      "p_value": 1.0,
+      "drift_detected": false,
+      "threshold": 0.05
+    },
+    "customer_type": {
+      "test": "chi_square",
+      "statistic": 31.31860511912949,
+      "p_value": 2.20341841123274e-05,
+      "drift_detected": true,
+      "threshold": 0.05
+    },
+    "brand": {
+      "test": "chi_square",
+      "statistic": 59.73027305110459,
+      "p_value": 7.839603931314576e-06,
+      "drift_detected": true,
+      "threshold": 0.05
+    },
+    "category": {
+      "test": "chi_square",
+      "statistic": 0.0,
+      "p_value": NaN,
+      "drift_detected": false,
+      "threshold": 0.05
+    },
+    "sub_category": {
+      "test": "chi_square",
+      "statistic": 0.3859793143699111,
+      "p_value": 0.5344204528516904,
+      "drift_detected": false,
+      "threshold": 0.05
+    },
+    "segment": {
+      "test": "chi_square",
+      "statistic": 9.934165374669142,
+      "p_value": 0.01913412382137418,
+      "drift_detected": true,
+      "threshold": 0.05
+    },
+    "package": {
+      "test": "chi_square",
+      "statistic": 3.9943820279224997,
+      "p_value": 0.13571597258298815,
+      "drift_detected": false,
+      "threshold": 0.05
+    }
+  }
+}

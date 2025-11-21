@@ -21,6 +21,7 @@ dependencies = [
     "plotly>=6.3.0",
     "prophet>=1.2.1",
     "pyarrow>=21.0.0",
+    "pynvml>=13.0.1",
     "scikit-learn>=1.7.2",
     "seaborn>=0.13.2",
     "shap>=0.48.0",

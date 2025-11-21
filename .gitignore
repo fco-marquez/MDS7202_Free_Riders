@@ -133,3 +133,4 @@ dmypy.json
 *.gif
 
 mlruns/
+mlflow_data/
