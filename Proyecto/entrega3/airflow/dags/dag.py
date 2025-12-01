@@ -61,10 +61,17 @@ DRIFT_REPORT_PATH = DRIFT_REPORTS_DIR / "drift_report_{execution_date}.json"
 MODEL_PATH = MODELS_DIR / "best_model.pkl"
 PREDICTIONS_PATH = PREDICTIONS_DIR / "predictions_{execution_date}.parquet"
 
+# CodaLab CSV output directory (inside predictions dir, same as parquet)
+CODALAB_CSV_DIR = PREDICTIONS_DIR
+CODALAB_CSV_PATH = CODALAB_CSV_DIR / "prediccion_{execution_date}.csv"
+
 # Training configuration from environment variables
 N_OPTUNA_TRIALS = int(os.getenv("N_OPTUNA_TRIALS", "50"))
 MLFLOW_EXPERIMENT = os.getenv("MLFLOW_EXPERIMENT_NAME", "sodai_drinks_prediction")
 DRIFT_THRESHOLD = float(os.getenv("DRIFT_THRESHOLD", "0.3"))
+
+# Prediction threshold for CodaLab (probability >= this value = predicted purchase)
+PREDICTION_THRESHOLD = float(os.getenv("PREDICTION_THRESHOLD", "0.112"))
 
 
 # ============================================================================
@@ -307,6 +314,67 @@ def generate_predictions(**context):
     print(f"Generated {len(predictions):,} predictions")
 
 
+def convert_predictions_to_csv(**context):
+    """
+    Convert predictions from parquet to CSV format for CodaLab submission.
+
+    Filters predictions by probability threshold and outputs only customer_id, product_id
+    for pairs where the model predicts a purchase will occur.
+
+    Output format:
+        customer_id,product_id
+        123,456
+        789,012
+        ...
+    """
+    import pandas as pd
+
+    execution_date = context["ds"]
+    predictions_parquet_path = str(PREDICTIONS_PATH).format(execution_date=execution_date)
+    csv_output_path = str(CODALAB_CSV_PATH).format(execution_date=execution_date)
+
+    print("=" * 60)
+    print("CONVERTING PREDICTIONS TO CODALAB CSV FORMAT")
+    print("=" * 60)
+
+    # Load predictions
+    print(f"\nLoading predictions from: {predictions_parquet_path}")
+    preds = pd.read_parquet(predictions_parquet_path)
+
+    print(f"Total predictions: {len(preds):,}")
+    print(f"Columns: {preds.columns.tolist()}")
+
+    # Show probability distribution
+    print(f"\nProbability statistics:")
+    print(f"  Min: {preds['probability'].min():.4f}")
+    print(f"  Max: {preds['probability'].max():.4f}")
+    print(f"  Mean: {preds['probability'].mean():.4f}")
+    print(f"  Median: {preds['probability'].median():.4f}")
+
+    # Filter by threshold
+    print(f"\nApplying threshold: {PREDICTION_THRESHOLD}")
+    positive_preds = preds[preds['probability'] >= PREDICTION_THRESHOLD][['customer_id', 'product_id']]
+
+    # Ensure integer types for IDs
+    positive_preds['customer_id'] = positive_preds['customer_id'].astype(int)
+    positive_preds['product_id'] = positive_preds['product_id'].astype(int)
+
+    # Save to CSV
+    positive_preds.to_csv(csv_output_path, index=False)
+
+    # Summary
+    pct = 100 * len(positive_preds) / len(preds) if len(preds) > 0 else 0
+    print(f"\n✓ CSV saved to: {csv_output_path}")
+    print(f"  Predicted purchases: {len(positive_preds):,} ({pct:.1f}% of universe)")
+    print(f"  File size: {Path(csv_output_path).stat().st_size:,} bytes")
+
+    # Show sample
+    print(f"\nSample (first 5 rows):")
+    print(positive_preds.head().to_string(index=False))
+
+    print("=" * 60)
+
+
 # ============================================================================
 # DAG DEFINITION
 # ============================================================================
@@ -422,9 +490,31 @@ with DAG(
         - Creates customer-product universe for week N+1
         - Applies feature engineering pipeline
         - Generates predictions with probabilities
-        - Saves results
-        
+        - Saves results as parquet
+
         This follows the requirement: "predict for the week following the most recent in the data"
+        """,
+    )
+
+    export_csv = PythonOperator(
+        task_id="export_codalab_csv",
+        python_callable=convert_predictions_to_csv,
+        doc_md="""
+        ### Export CodaLab CSV
+        Converts predictions from parquet to CSV format for CodaLab submission:
+        - Loads predictions parquet file
+        - Filters by probability threshold (default: 0.112)
+        - Outputs only customer_id, product_id columns
+        - Saves to predictions/ directory outside airflow
+
+        **Output format:**
+        ```
+        customer_id,product_id
+        123,456
+        789,012
+        ```
+
+        The threshold can be configured via PREDICTION_THRESHOLD environment variable.
         """,
     )
 
@@ -447,8 +537,8 @@ with DAG(
     # Branch: retrain or skip
     branch >> [split_train_task, skip]
 
-    # Both paths converge to prediction
-    [split_train_task, skip] >> predict >> end
+    # Both paths converge to prediction, then export CSV for CodaLab
+    [split_train_task, skip] >> predict >> export_csv >> end
 
 
 # ============================================================================
@@ -460,8 +550,8 @@ dag.doc_md = """
 
 ## Overview
 This DAG implements a complete machine learning pipeline for predicting customer purchases
-of drinks products for the next week. It includes automated drift detection and conditional
-model retraining.
+of drinks products for the next week. It includes automated drift detection, conditional
+model retraining, and CodaLab CSV export.
 
 ## Features
 - **Data Extraction**: Validates and loads raw data
@@ -472,6 +562,7 @@ model retraining.
 - **Experiment Tracking**: MLflow integration for reproducibility
 - **Interpretability**: SHAP values for model explanation
 - **Predictions**: Generates next week forecasts
+- **CodaLab Export**: Converts predictions to CSV format for competition submission
 
 ## Data Flow
 ```
@@ -482,12 +573,15 @@ Incoming/ → Wait for File → Move to Raw/ → Preprocessing → Drift Detecti
                                                       Retrain         Skip
                                                           ↓              ↓
                                                           └─→ Predict ←─┘
+                                                                  ↓
+                                                          Export CSV (CodaLab)
 ```
 
 ## Automated Processing
 - **FileSensor** monitors `data/incoming/` for new .parquet batch files
 - When new data arrives, it's automatically moved to `data/raw/`
 - Pipeline processes the new batch with drift detection
+- Predictions are automatically exported to CSV for CodaLab
 - Runs daily to check for new files (configurable)
 
 ## Configuration
@@ -496,13 +590,23 @@ Incoming/ → Wait for File → Move to Raw/ → Preprocessing → Drift Detecti
 - **Model**: XGBoost with class balancing
 - **Primary metric**: F1-score
 - **Drift threshold**: 30% of features showing drift
+- **Prediction threshold**: 0.112 (configurable via PREDICTION_THRESHOLD env var)
 - **Predictions**: For week N+1 (where N = latest week in data)
 
 ## Outputs
 - **Processed data**: `data/processed/`
 - **Drift reports**: `drift_reports/`
 - **Models**: `models/` + MLflow
-- **Predictions**: `predictions/`
+- **Predictions (parquet)**: `airflow/predictions/`
+- **Predictions (CSV for CodaLab)**: `predictions/` (root directory)
+
+## CodaLab CSV Format
+The exported CSV contains only customer-product pairs predicted as purchases:
+```csv
+customer_id,product_id
+123,456
+789,012
+```
 
 ## MLflow
 All experiments are tracked in MLflow. Access the UI with:
