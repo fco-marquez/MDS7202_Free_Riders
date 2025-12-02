@@ -137,13 +137,6 @@ def create_advanced_features(X: pd.DataFrame, y: pd.Series = None) -> pd.DataFra
 
 
 class FeatureEngineer(BaseEstimator, TransformerMixin):
-    """
-    Feature engineering transformer that creates recency, frequency, and trend features.
-
-    IMPORTANT: For prediction, the input X must already contain a 'bought' column
-    with historical purchase data (use merge_historical_data_for_features first).
-    """
-
     def __init__(self):
         self.y_train_ = None
 
@@ -154,88 +147,48 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
 
     def transform(self, X, y=None):
         X_new = X.copy()
+        y_to_use = y if y is not None else self.y_train_
 
-        # Check if features are already pre-calculated (from prediction pipeline)
-        # If recency, frequency, trend already exist, skip calculation
-        required_features = ["recency", "frequency", "customer_product_share", "trend"]
-        if all(f in X_new.columns for f in required_features):
-            print("Features already pre-calculated, skipping feature engineering.")
-            # Just drop customer_id if present (not needed for model)
-            X_new.drop(columns=["customer_id"], inplace=True, errors="ignore")
-            return X_new
+        if y_to_use is not None:
+            X_new["bought"] = y_to_use
+            X_new = X_new.sort_values(by=["customer_id", "product_id", "week"])
 
-        # Determine what 'bought' values to use:
-        # 1. If 'bought' column already exists in X (prediction with historical data), use it
-        # 2. If y is passed explicitly, use that
-        # 3. Fall back to self.y_train_ (but this only works for same data as training!)
-        if "bought" in X_new.columns:
-            # Data already has 'bought' column (from merge_historical_data_for_features)
-            pass
-        elif y is not None:
-            X_new["bought"] = y.values if hasattr(y, 'values') else y
-        elif self.y_train_ is not None and len(self.y_train_) == len(X_new):
-            X_new["bought"] = self.y_train_.values if hasattr(self.y_train_, 'values') else self.y_train_
-        else:
-            # No target available - create dummy features (zeros)
-            # This happens when predicting without proper historical merge
-            print("WARNING: No 'bought' data available for feature engineering!")
-            print("Features recency/frequency/trend will be set to defaults.")
-            X_new["recency"] = 999  # High recency = never purchased
-            X_new["frequency"] = 0
-            X_new["customer_product_share"] = 0
-            X_new["trend"] = 0
-            # Drop customer_id if present (not needed for model)
-            X_new.drop(columns=["customer_id"], inplace=True, errors="ignore")
-            return X_new
+            X_new["last_purchase_week"] = X_new.groupby(["customer_id", "product_id"])[
+                "week"
+            ].shift(1)
+            X_new["recency"] = X_new["week"] - X_new["last_purchase_week"]
+            X_new.fillna({"recency": X_new["recency"].max()}, inplace=True)
 
-        # Sort for proper rolling calculations
-        X_new = X_new.sort_values(by=["customer_id", "product_id", "week"])
+            X_new["frequency"] = X_new.groupby(["customer_id", "product_id"])[
+                "bought"
+            ].transform(lambda s: s.shift(1).rolling(window=6, min_periods=1).sum())
 
-        # Recency: weeks since last purchase
-        X_new["last_purchase_week"] = X_new.groupby(["customer_id", "product_id"])[
-            "week"
-        ].shift(1)
-        X_new["recency"] = X_new["week"] - X_new["last_purchase_week"]
-        max_recency = X_new["recency"].max()
-        X_new["recency"] = X_new["recency"].fillna(max_recency if pd.notna(max_recency) else 999)
+            X_new["total_purchases"] = X_new.groupby("customer_id")["bought"].transform(
+                lambda s: s.shift(1).cumsum()
+            )
 
-        # Frequency: purchases in last 6 weeks (excluding current week)
-        X_new["frequency"] = X_new.groupby(["customer_id", "product_id"])[
-            "bought"
-        ].transform(lambda s: s.shift(1).rolling(window=6, min_periods=1).sum())
-        X_new["frequency"] = X_new["frequency"].fillna(0)
+            X_new["customer_product_share"] = (
+                (X_new["frequency"] / X_new["total_purchases"])
+                .replace([np.inf, -np.inf], np.nan)
+                .fillna(0)
+            )
 
-        # Total purchases by customer (for share calculation)
-        X_new["total_purchases"] = X_new.groupby("customer_id")["bought"].transform(
-            lambda s: s.shift(1).cumsum()
-        )
-        X_new["total_purchases"] = X_new["total_purchases"].fillna(0)
+            recent = X_new.groupby(["customer_id", "product_id"])["bought"].transform(
+                lambda s: s.shift(1).rolling(window=3, min_periods=1).sum()
+            )
+            past = X_new["frequency"] - recent
+            X_new["trend"] = recent - past
 
-        # Customer-product share
-        X_new["customer_product_share"] = (
-            (X_new["frequency"] / X_new["total_purchases"])
-            .replace([np.inf, -np.inf], np.nan)
-            .fillna(0)
-        )
-
-        # Trend: recent purchases (3 weeks) minus older purchases
-        recent = X_new.groupby(["customer_id", "product_id"])["bought"].transform(
-            lambda s: s.shift(1).rolling(window=3, min_periods=1).sum()
-        )
-        past = X_new["frequency"] - recent
-        X_new["trend"] = (recent - past).fillna(0)
-
-        # Drop temporary columns
-        X_new.drop(
-            columns=[
-                "bought",
-                "last_purchase_week",
-                "total_purchases",
-                "customer_id",
-            ],
-            inplace=True,
-            errors="ignore",
-        )
+            X_new.drop(
+                columns=[
+                    "bought",
+                    "last_purchase_week",
+                    "total_purchases",
+                    "customer_id",
+                ],
+                inplace=True,
+                errors="ignore",
+            )
 
         return X_new
 
@@ -267,8 +220,7 @@ class GeoClusterer(BaseEstimator, TransformerMixin):
 
 
 def create_pipeline():
-    # NOTE: product_id is kept as numeric (not one-hot encoded) to save memory
-    # One-hot encoding product_id would create ~1000 extra columns
+    # TODO: Agregar las transformaciones a las columans zone_id y region_id
     numerical_features = [
         "size",
         "num_deliver_per_week",
@@ -276,7 +228,6 @@ def create_pipeline():
         "frequency",
         "customer_product_share",
         "trend",
-        "product_id",  # Keep as numeric instead of one-hot encoding
     ]
     categorical_features = [
         "customer_type",
@@ -286,6 +237,9 @@ def create_pipeline():
         "segment",
         "package",
         "cluster",
+        "product_id",
+        "zone_id",
+        "region_id",
     ]
 
     numerical_pipeline = Pipeline(
@@ -307,7 +261,7 @@ def create_pipeline():
             ("num", numerical_pipeline, numerical_features),
             ("cat", categorical_pipeline, categorical_features),
         ],
-        remainder="drop",  # Drop unused columns to save memory
+        remainder="passthrough",  # Mantener columnas no especificadas
         verbose_feature_names_out=False,  # mantiene nombres legibles
     )
 

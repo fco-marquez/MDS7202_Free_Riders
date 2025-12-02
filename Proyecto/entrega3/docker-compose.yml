@@ -40,9 +40,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 8G # Aumentar de 4G default a 8G
+          memory: 14G # Aumentar de 4G default a 8G
         reservations:
-          memory: 4G
+          memory: 6G
     environment:
       # Core
       - AIRFLOW__CORE__EXECUTOR=LocalExecutor

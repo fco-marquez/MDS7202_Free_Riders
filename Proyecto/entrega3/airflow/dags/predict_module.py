@@ -169,13 +169,14 @@ def create_next_week_universe(
 
 
 def merge_historical_data_for_features(
-    universe_df: pd.DataFrame, historical_df: pd.DataFrame
+    universe_df: pd.DataFrame, historical_df: pd.DataFrame, prediction_week: int
 ) -> pd.DataFrame:
     """
-    Merge historical data with universe to enable feature engineering.
+    Merge historical data with universe and PRE-CALCULATE features.
 
     This is needed because features like recency, frequency, etc. are calculated
-    based on historical purchases.
+    based on historical purchases. We calculate them here so the model pipeline
+    receives data with features already computed.
 
     Parameters
     ----------
@@ -183,37 +184,105 @@ def merge_historical_data_for_features(
         Universe for next week
     historical_df : pd.DataFrame
         Historical transaction data with features
+    prediction_week : int
+        The week number we're predicting for
 
     Returns
     -------
     pd.DataFrame
-        Combined data ready for feature engineering
+        Universe with pre-calculated features, ready for model prediction
     """
+    import gc
+
     print("\n" + "=" * 60)
-    print("MERGING HISTORICAL DATA FOR FEATURE ENGINEERING")
+    print("MERGING HISTORICAL DATA AND CALCULATING FEATURES")
     print("=" * 60)
 
-    # We need to append the universe to historical data to calculate rolling features (7 weeks is enough)
-    # The universe will have bought=0 (placeholder) since we don't know actual purchases yet
+    # We need to append the universe to historical data to calculate rolling features
     historical_df = historical_df.copy()
     universe_df = universe_df.copy()
 
-    historical_df = historical_df[
-        historical_df["week"] >= (universe_df["week"].min() - 7)
-    ]  # Keep last 7 weeks only
+    # Keep only recent history (last 10 weeks should be enough for rolling features)
+    min_week = prediction_week - 10
+    historical_df = historical_df[historical_df["week"] >= min_week]
+    print(f"Historical data (weeks {min_week} to {prediction_week - 1}): {len(historical_df):,} rows")
 
-    # Create the columns needed for merging
-    universe_df["bought"] = 0  # Placeholder
+    # Add bought=0 placeholder for prediction week
+    universe_df["bought"] = 0
+
+    # Combine historical + prediction universe
     combined = pd.concat(
         [historical_df, universe_df], ignore_index=True, axis=0, join="outer"
     )
-
     print(f"Combined data size: {len(combined):,} rows")
-    print(f"Historical data: {len(historical_df):,} rows")
-    print(f"Universe (next week): {len(universe_df):,} rows")
+
+    # Sort for rolling calculations
+    combined = combined.sort_values(by=["customer_id", "product_id", "week"])
+
+    # =========================================================================
+    # PRE-CALCULATE FEATURES (same logic as FeatureEngineer)
+    # =========================================================================
+    print("\nCalculating features...")
+
+    # Recency: weeks since last purchase for this customer-product
+    combined["last_purchase_week"] = combined.groupby(["customer_id", "product_id"])[
+        "week"
+    ].shift(1)
+    combined["recency"] = combined["week"] - combined["last_purchase_week"]
+    max_recency = combined["recency"].max()
+    combined["recency"] = combined["recency"].fillna(max_recency if pd.notna(max_recency) else 999)
+
+    # Frequency: purchases in last 6 weeks (excluding current week)
+    combined["frequency"] = combined.groupby(["customer_id", "product_id"])[
+        "bought"
+    ].transform(lambda s: s.shift(1).rolling(window=6, min_periods=1).sum())
+    combined["frequency"] = combined["frequency"].fillna(0)
+
+    # Total purchases by customer (for share calculation)
+    combined["total_purchases"] = combined.groupby("customer_id")["bought"].transform(
+        lambda s: s.shift(1).cumsum()
+    )
+    combined["total_purchases"] = combined["total_purchases"].fillna(0)
+
+    # Customer-product share
+    combined["customer_product_share"] = (
+        (combined["frequency"] / combined["total_purchases"])
+        .replace([np.inf, -np.inf], np.nan)
+        .fillna(0)
+    )
+
+    # Trend: recent purchases (3 weeks) minus older purchases
+    recent = combined.groupby(["customer_id", "product_id"])["bought"].transform(
+        lambda s: s.shift(1).rolling(window=3, min_periods=1).sum()
+    )
+    past = combined["frequency"] - recent
+    combined["trend"] = (recent - past).fillna(0)
+
+    # =========================================================================
+    # FILTER TO PREDICTION WEEK ONLY
+    # =========================================================================
+    print(f"\nFiltering to prediction week {prediction_week}...")
+    result = combined[combined["week"] == prediction_week].copy()
+
+    # Drop columns not needed for prediction
+    cols_to_drop = ["bought", "last_purchase_week", "total_purchases"]
+    result.drop(columns=[c for c in cols_to_drop if c in result.columns], inplace=True)
+
+    print(f"Universe with features: {len(result):,} rows")
+    print(f"Feature columns: recency, frequency, customer_product_share, trend")
+
+    # Show feature statistics
+    print("\nFeature statistics:")
+    for col in ["recency", "frequency", "customer_product_share", "trend"]:
+        if col in result.columns:
+            print(f"  {col}: min={result[col].min():.2f}, max={result[col].max():.2f}, mean={result[col].mean():.2f}")
+
+    # Clean up
+    del combined, historical_df
+    gc.collect()
 
     print("=" * 60)
-    return combined
+    return result
 
 
 def generate_predictions(
@@ -488,19 +557,20 @@ def run_prediction_pipeline(
     print(f"\nCreating universe for prediction week: {latest_week + 1}")
     universe = create_next_week_universe(customers_df, products_df, latest_week)
 
-    # NOTE: We do NOT merge with historical data here!
-    # The model pipeline (loaded from MLflow/pkl) already contains:
-    # 1. GeoClusterer (creates geographic features)
-    # 2. FeatureEngineer (creates recency/frequency/monetary features from historical patterns)
-    # 3. Preprocessor (scaling, encoding)
-    # 4. XGBoost model
-    # So we just pass the raw universe and let the pipeline handle everything.
+    # IMPORTANT: We MUST merge with historical data for feature engineering!
+    # The features (recency, frequency, trend) need historical purchase data.
+    # This function also pre-calculates the features, so the model pipeline
+    # doesn't need to recalculate them (FeatureEngineer will see features already exist).
+    prediction_week = latest_week + 1
+    universe_with_features = merge_historical_data_for_features(
+        universe, historical_df, prediction_week
+    )
 
-    print(f"\nUniverse ready for prediction: {len(universe):,} rows")
+    print(f"\nUniverse ready for prediction: {len(universe_with_features):,} rows")
 
     # Generate predictions with batch processing
     predictions = generate_predictions(
-        model, universe, output_path=output_predictions_path, batch_size=batch_size
+        model, universe_with_features, output_path=output_predictions_path, batch_size=batch_size
     )
 
     print("\n" + "=" * 80)

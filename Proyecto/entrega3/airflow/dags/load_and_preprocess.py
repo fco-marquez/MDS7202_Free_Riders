@@ -108,7 +108,15 @@ def create_week_and_objective(dfs: Dict[str, pd.DataFrame]) -> Dict[str, pd.Data
 
 
 def join_data(dfs: Dict[str, pd.DataFrame], output_path: str = None):
-    """Join transactions products and customers DataFrames."""
+    """
+    Join transactions, products, and customers DataFrames.
+
+    Processes data in batches BY WEEK to avoid memory issues.
+    Each week creates a customer×product universe, which is much smaller
+    than creating the full customer×product×week universe at once.
+    """
+    import gc
+
     transactions_df = dfs.get("transacciones.parquet")
     products_df = dfs.get("productos.parquet")
     customers_df = dfs.get("clientes.parquet")
@@ -117,7 +125,7 @@ def join_data(dfs: Dict[str, pd.DataFrame], output_path: str = None):
     customers_with_transactions = transactions_df["customer_id"].unique()
     customers_df = customers_df[
         customers_df["customer_id"].isin(customers_with_transactions)
-    ]
+    ].copy()
 
     # Drop zona_id y region_id de products_df si existen
     if "zone_id" in products_df.columns:
@@ -129,7 +137,7 @@ def join_data(dfs: Dict[str, pd.DataFrame], output_path: str = None):
     products_with_transactions = transactions_df["product_id"].unique()
     products_df = products_df[
         products_df["product_id"].isin(products_with_transactions)
-    ]
+    ].copy()
 
     # Mantener IDs como int para consistencia (NO convertir a string)
     customers_df["customer_id"] = customers_df["customer_id"].astype("int32")
@@ -146,47 +154,215 @@ def join_data(dfs: Dict[str, pd.DataFrame], output_path: str = None):
         )
     )
 
-    # Crear universo cliente-producto-semana
-    weeks = pd.Series(transactions_df["week"].unique(), name="week")
-    weeks = weeks.astype("int16")
-
-    # Obtener IDs únicos
+    # Get unique values
+    weeks = np.sort(transactions_df["week"].unique()).astype("int16")
     unique_customers = transactions_df["customer_id"].unique()
     unique_products = transactions_df["product_id"].unique()
 
-    universe = pd.MultiIndex.from_product(
-        [
-            unique_customers,
-            unique_products,
-            weeks,
-        ],
-        names=["customer_id", "product_id", "week"],
-    ).to_frame(index=False)
+    n_customers = len(unique_customers)
+    n_products = len(unique_products)
+    n_weeks = len(weeks)
 
-    # Agregar las variables de clientes y productos
-    universe = universe.merge(customers_df, on="customer_id", how="left")
-    universe = universe.merge(products_df, on="product_id", how="left")
-    print("Universe shape:", universe.shape)
-    data = universe.merge(
-        transactions_df, on=["customer_id", "product_id", "week"], how="left"
-    )
+    total_universe_size = n_customers * n_products * n_weeks
+    print(f"Universe dimensions: {n_customers} customers x {n_products} products x {n_weeks} weeks")
+    print(f"Total universe size: {total_universe_size:,} rows")
+    print(f"Processing in batches by week to save memory...")
 
-    data["bought"] = data["bought"].fillna(0).astype("int8")
-    data.drop(columns=["order_id", "purchase_date", "items"], inplace=True)
-
-    # Save parquet file
     if output_path is None:
         raise ValueError("output_path must be specified")
-
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    # Columns to drop after merge
+    cols_to_drop = ["order_id", "purchase_date", "items"]
+
+    # Process week by week
+    all_chunks = []
+    total_rows = 0
+
+    for week_idx, week in enumerate(weeks):
+        print(f"  Processing week {week} ({week_idx + 1}/{n_weeks})...")
+
+        # Create universe for this week only (customers × products)
+        week_universe = pd.MultiIndex.from_product(
+            [unique_customers, unique_products],
+            names=["customer_id", "product_id"],
+        ).to_frame(index=False)
+        week_universe["week"] = np.int16(week)
+
+        # Get transactions for this week
+        week_transactions = transactions_df[transactions_df["week"] == week]
+
+        # Merge with customer and product info
+        week_universe = week_universe.merge(customers_df, on="customer_id", how="left")
+        week_universe = week_universe.merge(products_df, on="product_id", how="left")
+
+        # Merge with transactions
+        week_data = week_universe.merge(
+            week_transactions, on=["customer_id", "product_id", "week"], how="left"
+        )
+
+        week_data["bought"] = week_data["bought"].fillna(0).astype("int8")
+
+        # Drop unnecessary columns
+        existing_cols_to_drop = [c for c in cols_to_drop if c in week_data.columns]
+        if existing_cols_to_drop:
+            week_data.drop(columns=existing_cols_to_drop, inplace=True)
+
+        all_chunks.append(week_data)
+        total_rows += len(week_data)
+
+        # Clean up
+        del week_universe, week_transactions, week_data
+        gc.collect()
+
+    # Concatenate all weeks
+    print(f"\nConcatenating {len(all_chunks)} week chunks...")
+    data = pd.concat(all_chunks, ignore_index=True)
+    del all_chunks
+    gc.collect()
+
+    print(f"Universe shape: {data.shape}")
+
+    # Save to parquet
     data.to_parquet(output_path, index=False)
     print(f"Saved processed data to: {output_path}")
 
     return data
 
 
+def join_data_incremental(
+    new_transactions_df: pd.DataFrame,
+    existing_data_path: str,
+    products_df: pd.DataFrame,
+    customers_df: pd.DataFrame,
+    output_path: str,
+) -> pd.DataFrame:
+    """
+    Incrementally update the universe with new transaction data.
+
+    Instead of rebuilding the entire universe, this function:
+    1. Loads existing processed data
+    2. Identifies new weeks in the incoming transactions
+    3. Creates universe only for new weeks
+    4. Appends to existing data
+
+    This is much more memory-efficient for incremental updates.
+    """
+    import gc
+
+    print("=" * 60)
+    print("INCREMENTAL DATA UPDATE")
+    print("=" * 60)
+
+    # Load existing data
+    print(f"Loading existing data from: {existing_data_path}")
+    existing_data = pd.read_parquet(existing_data_path)
+    existing_weeks = set(existing_data["week"].unique())
+    print(f"Existing weeks: {sorted(existing_weeks)}")
+
+    # Get new weeks from transactions
+    new_weeks = set(new_transactions_df["week"].unique())
+    truly_new_weeks = new_weeks - existing_weeks
+    print(f"New transaction weeks: {sorted(new_weeks)}")
+    print(f"Truly new weeks to add: {sorted(truly_new_weeks)}")
+
+    if not truly_new_weeks:
+        print("No new weeks to add. Returning existing data.")
+        return existing_data
+
+    # Prepare dataframes
+    customers_df = customers_df.copy()
+    products_df = products_df.copy()
+
+    # Drop zona_id y region_id de products_df si existen
+    if "zone_id" in products_df.columns:
+        products_df = products_df.drop(columns=["zone_id"])
+    if "region_id" in products_df.columns:
+        products_df = products_df.drop(columns=["region_id"])
+
+    # Get unique customers and products from existing data (maintain same universe)
+    unique_customers = existing_data["customer_id"].unique()
+    unique_products = existing_data["product_id"].unique()
+
+    # Filter to active customers/products
+    customers_df = customers_df[customers_df["customer_id"].isin(unique_customers)].copy()
+    products_df = products_df[products_df["product_id"].isin(unique_products)].copy()
+
+    # Optimize types
+    customers_df["customer_id"] = customers_df["customer_id"].astype("int32")
+    products_df["product_id"] = products_df["product_id"].astype("int32")
+    new_transactions_df["customer_id"] = new_transactions_df["customer_id"].astype("int32")
+    new_transactions_df["product_id"] = new_transactions_df["product_id"].astype("int32")
+
+    customers_df["customer_type"] = customers_df["customer_type"].astype("category")
+    products_df[["brand", "category", "sub_category", "segment", "package"]] = (
+        products_df[["brand", "category", "sub_category", "segment", "package"]].astype("category")
+    )
+
+    cols_to_drop = ["order_id", "purchase_date", "items"]
+
+    # Process only new weeks
+    new_chunks = []
+    for week in sorted(truly_new_weeks):
+        print(f"  Processing new week {week}...")
+
+        # Create universe for this week
+        week_universe = pd.MultiIndex.from_product(
+            [unique_customers, unique_products],
+            names=["customer_id", "product_id"],
+        ).to_frame(index=False)
+        week_universe["week"] = np.int16(week)
+
+        # Get transactions for this week
+        week_transactions = new_transactions_df[new_transactions_df["week"] == week]
+
+        # Merge with customer and product info
+        week_universe = week_universe.merge(customers_df, on="customer_id", how="left")
+        week_universe = week_universe.merge(products_df, on="product_id", how="left")
+
+        # Merge with transactions
+        week_data = week_universe.merge(
+            week_transactions, on=["customer_id", "product_id", "week"], how="left"
+        )
+
+        week_data["bought"] = week_data["bought"].fillna(0).astype("int8")
+
+        # Drop unnecessary columns
+        existing_cols_to_drop = [c for c in cols_to_drop if c in week_data.columns]
+        if existing_cols_to_drop:
+            week_data.drop(columns=existing_cols_to_drop, inplace=True)
+
+        new_chunks.append(week_data)
+        del week_universe, week_transactions, week_data
+        gc.collect()
+
+    # Concatenate new data
+    print(f"\nConcatenating {len(new_chunks)} new week chunks...")
+    new_data = pd.concat(new_chunks, ignore_index=True)
+    del new_chunks
+    gc.collect()
+
+    # Combine with existing data
+    print(f"Combining with existing data...")
+    combined_data = pd.concat([existing_data, new_data], ignore_index=True)
+    del existing_data, new_data
+    gc.collect()
+
+    print(f"Combined universe shape: {combined_data.shape}")
+
+    # Save
+    combined_data.to_parquet(output_path, index=False)
+    print(f"Saved updated data to: {output_path}")
+
+    print("=" * 60)
+    return combined_data
+
+
 def run_preprocessing_pipeline(
-    raw_data_folder: str, output_data_path: str = None, static_data_folder: str = None
+    raw_data_folder: str,
+    output_data_path: str = None,
+    static_data_folder: str = None,
+    existing_data_path: str = None,
 ) -> pd.DataFrame:
     """
     Run complete preprocessing pipeline (for Airflow task).
@@ -197,6 +373,11 @@ def run_preprocessing_pipeline(
         Path to folder containing raw parquet files
     output_data_path : str, optional
         Path to save processed data
+    static_data_folder : str, optional
+        Path to folder containing static data (customers, products)
+    existing_data_path : str, optional
+        Path to existing processed data for incremental updates.
+        If provided and file exists, will use incremental update mode.
 
     Returns
     -------
@@ -226,9 +407,26 @@ def run_preprocessing_pipeline(
     print("\nCreating week and objective variables...")
     data_frames = create_week_and_objective(data_frames)
 
-    # Join data
-    print("\nJoining data and creating universe...")
-    final_data = join_data(data_frames, output_path=output_data_path)
+    # Check if we should do incremental update
+    use_incremental = (
+        existing_data_path is not None
+        and os.path.exists(existing_data_path)
+        and output_data_path != existing_data_path  # Don't use incremental if same file
+    )
+
+    if use_incremental:
+        print("\n🔄 Using INCREMENTAL update mode...")
+        final_data = join_data_incremental(
+            new_transactions_df=data_frames["transacciones.parquet"],
+            existing_data_path=existing_data_path,
+            products_df=data_frames["productos.parquet"],
+            customers_df=data_frames["clientes.parquet"],
+            output_path=output_data_path,
+        )
+    else:
+        # Full rebuild
+        print("\nJoining data and creating universe (full rebuild)...")
+        final_data = join_data(data_frames, output_path=output_data_path)
 
     print("\n" + "=" * 60)
     print("PREPROCESSING COMPLETED")

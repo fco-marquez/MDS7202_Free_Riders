@@ -139,22 +139,26 @@ def ingest_and_preprocess(**context):
     if len(raw_files) == 0:
         raise FileNotFoundError(f"No raw data files in {RAW_DATA_DIR}!")
 
-    # Determine output path based on whether this is first run
+    # Determine output path and whether to use incremental mode
+    existing_data_for_incremental = None
+
     if not CURRENT_DATA_PATH.exists():
-        # First run: create current_data.parquet
+        # First run: create current_data.parquet (full rebuild)
         output_path = CURRENT_DATA_PATH
-        print("\nNew first run detected - creating initial dataset")
+        print("\n🆕 First run detected - creating initial dataset (full rebuild)")
     else:
         # Subsequent run: create final_data.parquet for comparison
+        # Use incremental mode to add only new weeks
         output_path = FINAL_DATA_PATH
-        print("\nUpdating dataset with new data")
+        existing_data_for_incremental = str(CURRENT_DATA_PATH)
+        print("\n🔄 Updating dataset with new data (incremental mode)")
 
     # Run preprocessing pipeline
-
     run_preprocessing_pipeline(
         raw_data_folder=str(RAW_DATA_DIR),
         output_data_path=str(output_path),
         static_data_folder=str(STATIC_DATA_DIR),
+        existing_data_path=existing_data_for_incremental,
     )
 
     # Push flags to XCom
@@ -411,23 +415,6 @@ with DAG(
         """,
     )
 
-    wait_for_data = FileSensor(
-        task_id="wait_for_new_batch",
-        filepath="data/incoming/*.parquet",
-        fs_conn_id="fs_default",
-        poke_interval=30,  # Check every 30 seconds
-        timeout=60 * 60 * 24 * 7,  # Wait up to 7 days
-        mode="reschedule",  # Free up worker slot while waiting
-        doc_md="""
-        ### Wait for New Batch Data
-        Monitors the `incoming/` directory for new .parquet batch files.
-        - Checks every 30 seconds
-        - Uses reschedule mode to not block the scheduler
-        - Times out after 7 days
-        - Automatically triggers pipeline when new data arrives
-        """,
-    )
-
     ingest_preprocess = PythonOperator(
         task_id="ingest_and_preprocess",
         python_callable=ingest_and_preprocess,
@@ -532,7 +519,7 @@ with DAG(
     # ========================================================================
 
     # Simplified linear flow with intelligent branching
-    start >> wait_for_data >> ingest_preprocess >> branch
+    start >> ingest_preprocess >> branch
 
     # Branch: retrain or skip
     branch >> [split_train_task, skip]

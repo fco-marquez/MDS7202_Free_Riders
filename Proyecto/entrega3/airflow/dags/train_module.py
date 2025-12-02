@@ -249,9 +249,20 @@ def optimize_hyperparameters(
     preprocessing_pipeline = create_pipeline()
 
     # Fit preprocessing pipeline on training data
+    # IMPORTANT: Add 'bought' column to X so FeatureEngineer can calculate features
     print("\nFitting preprocessing pipeline...")
-    X_train_processed = preprocessing_pipeline.fit_transform(X_train, y_train)
-    X_val_processed = preprocessing_pipeline.transform(X_val)
+    X_train_with_target = X_train.copy()
+    X_train_with_target["bought"] = y_train.values
+    X_train_processed = preprocessing_pipeline.fit_transform(X_train_with_target, y_train)
+    del X_train_with_target
+    gc.collect()
+
+    # Transform validation data (also needs 'bought' for feature calculation)
+    X_val_with_target = X_val.copy()
+    X_val_with_target["bought"] = y_val.values
+    X_val_processed = preprocessing_pipeline.transform(X_val_with_target)
+    del X_val_with_target
+    gc.collect()
 
     print(f"Processed training data shape: {X_train_processed.shape}")
     print(f"Processed validation data shape: {X_val_processed.shape}")
@@ -295,9 +306,9 @@ def optimize_hyperparameters(
             y_pred_proba = model.predict_proba(X_val_processed)[:, 1]
 
             # Calculate metrics
-            recall = recall_score(y_val, y_pred)
-            precision = precision_score(y_val, y_pred)
-            f1 = f1_score(y_val, y_pred)
+            recall = recall_score(y_val, y_pred, zero_division=0)
+            precision = precision_score(y_val, y_pred, zero_division=0)
+            f1 = f1_score(y_val, y_pred, zero_division=0)
             auc_pr = average_precision_score(y_val, y_pred_proba)
 
             # Log parameters and metrics
@@ -434,26 +445,40 @@ def train_final_model(
         full_pipeline.fit(X_train, y_train)
 
         # Predictions
+        # IMPORTANT: Add 'bought' column to X so FeatureEngineer can calculate features
+        # This is needed because predict() doesn't pass y, but features need historical purchases
         print("Generating predictions...")
-        y_train_pred = full_pipeline.predict(X_train)
-        y_val_pred = full_pipeline.predict(X_val)
-        y_train_proba = full_pipeline.predict_proba(X_train)[:, 1]
-        y_val_proba = full_pipeline.predict_proba(X_val)[:, 1]
+
+        # For training set evaluation
+        X_train_with_target = X_train.copy()
+        X_train_with_target["bought"] = y_train.values
+        y_train_pred = full_pipeline.predict(X_train_with_target)
+        y_train_proba = full_pipeline.predict_proba(X_train_with_target)[:, 1]
+        del X_train_with_target
+        gc.collect()
+
+        # For validation set evaluation
+        X_val_with_target = X_val.copy()
+        X_val_with_target["bought"] = y_val.values
+        y_val_pred = full_pipeline.predict(X_val_with_target)
+        y_val_proba = full_pipeline.predict_proba(X_val_with_target)[:, 1]
+        del X_val_with_target
+        gc.collect()
 
         # Calculate metrics
         train_metrics = {
             "train_accuracy": accuracy_score(y_train, y_train_pred),
-            "train_precision": precision_score(y_train, y_train_pred),
-            "train_recall": recall_score(y_train, y_train_pred),
-            "train_f1": f1_score(y_train, y_train_pred),
+            "train_precision": precision_score(y_train, y_train_pred, zero_division=0),
+            "train_recall": recall_score(y_train, y_train_pred, zero_division=0),
+            "train_f1": f1_score(y_train, y_train_pred, zero_division=0),
             "train_auc_pr": average_precision_score(y_train, y_train_proba),
         }
 
         val_metrics = {
             "val_accuracy": accuracy_score(y_val, y_val_pred),
-            "val_precision": precision_score(y_val, y_val_pred),
-            "val_recall": recall_score(y_val, y_val_pred),
-            "val_f1": f1_score(y_val, y_val_pred),
+            "val_precision": precision_score(y_val, y_val_pred, zero_division=0),
+            "val_recall": recall_score(y_val, y_val_pred, zero_division=0),
+            "val_f1": f1_score(y_val, y_val_pred, zero_division=0),
             "val_auc_pr": average_precision_score(y_val, y_val_proba),
         }
 
@@ -505,13 +530,16 @@ def train_final_model(
         # SHAP values
         print("\nCalculating SHAP values...")
         try:
-            # Get processed data for SHAP
+            # Get processed data for SHAP - need to include 'bought' for feature engineering
+            X_val_for_shap = X_val.copy()
+            X_val_for_shap["bought"] = y_val.values
             X_val_processed = full_pipeline.named_steps["preprocessing"].transform(
-                X_val
+                X_val_for_shap
             )
+            del X_val_for_shap
 
             # Sample for SHAP (to speed up)
-            sample_size = min(1000, len(X_val_processed))
+            sample_size = min(SHAP_SAMPLE_SIZE, len(X_val_processed))
             X_sample = X_val_processed.sample(n=sample_size, random_state=42)
 
             # Create SHAP explainer

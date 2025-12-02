@@ -226,6 +226,7 @@ def detect_drift(
     drift_ratio = features_with_drift / total_features if total_features > 0 else 0
 
     # Decision: retrain if more than threshold of features show drift
+    print(f"Drift ratio: {drift_ratio:.2%}, Threshold: {DRIFT_THRESHOLD:.2%}")
     needs_retrain = drift_ratio > DRIFT_THRESHOLD
 
     # Create detailed report
