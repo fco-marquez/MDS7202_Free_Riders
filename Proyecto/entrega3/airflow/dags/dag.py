@@ -98,18 +98,18 @@ def ingest_and_preprocess(**context):
     incoming_files = list(INCOMING_DATA_DIR.glob("*.parquet"))
 
     if incoming_files:
-        print(f"\n📦 Found {len(incoming_files)} new batch file(s) in incoming directory:")
+        print(f"\n Found {len(incoming_files)} new batch file(s) in incoming directory:")
         for src in incoming_files:
             try:
                 dest = RAW_DATA_DIR / src.name
                 print(f"  - Moving {src.name} to raw data directory...")
                 shutil.move(str(src), str(dest))
-                print(f"    ✓ Successfully moved to {RAW_DATA_DIR}")
+                print(f"    Successfully moved to {RAW_DATA_DIR}")
                 new_data_arrived = True
             except Exception as e:
                 print(f"    ✗ Error moving {src.name}: {e}")
     else:
-        print("\nℹ️  No new files in incoming directory")
+        print("\nℹ  No new files in incoming directory")
 
     # Legacy support: Get configuration from dag_run.conf
     dag_run = context.get("dag_run")
@@ -118,19 +118,19 @@ def ingest_and_preprocess(**context):
 
     # Copy new parquet fragments if provided via conf (manual trigger)
     if new_parquet_paths:
-        print(f"\n📦 New parquet fragments from config: {new_parquet_paths}")
+        print(f"\n New parquet fragments from config: {new_parquet_paths}")
         for p in new_parquet_paths:
             try:
                 src = Path(p)
                 if not src.exists():
-                    print(f"  ✗ File not found: {p}")
+                    print(f" File not found: {p}")
                     continue
                 dest = RAW_DATA_DIR / src.name
                 shutil.copyfile(src, dest)
-                print(f"  ✓ Copied {src.name} to {RAW_DATA_DIR}")
+                print(f" Copied {src.name} to {RAW_DATA_DIR}")
                 new_data_arrived = True
             except Exception as e:
-                print(f"  ✗ Error copying {p}: {e}")
+                print(f" Error copying {p}: {e}")
 
     # Verify raw data exists
     raw_files = list(RAW_DATA_DIR.glob("*.parquet"))
@@ -165,7 +165,7 @@ def ingest_and_preprocess(**context):
     context["task_instance"].xcom_push(key="new_data_arrived", value=new_data_arrived)
     context["task_instance"].xcom_push(key="output_path", value=str(output_path))
 
-    print(f"\n✓ Data saved to: {output_path}")
+    print(f"\n Data saved to: {output_path}")
     print("=" * 60)
 
 
@@ -186,7 +186,7 @@ def split_and_prepare_training(**context):
         input_data_path=str(CURRENT_DATA_PATH), output_dir=str(PROCESSED_DATA_DIR)
     )
 
-    print(f"\n✓ Train/Val data saved to {PROCESSED_DATA_DIR}")
+    print(f"\n Train/Val data saved to {PROCESSED_DATA_DIR}")
     print("=" * 60)
 
 

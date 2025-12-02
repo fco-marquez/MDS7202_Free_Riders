@@ -128,10 +128,10 @@ def join_data(dfs: Dict[str, pd.DataFrame], output_path: str = None):
     ].copy()
 
     # Drop zona_id y region_id de products_df si existen
-    if "zone_id" in products_df.columns:
-        products_df = products_df.drop(columns=["zone_id"])
-    if "region_id" in products_df.columns:
-        products_df = products_df.drop(columns=["region_id"])
+    if "zone_id" in customers_df.columns:
+        customers_df = customers_df.drop(columns=["zone_id"])
+    if "region_id" in customers_df.columns:
+        customers_df = customers_df.drop(columns=["region_id"])
 
     # Filtramos productos activos
     products_with_transactions = transactions_df["product_id"].unique()
@@ -275,10 +275,10 @@ def join_data_incremental(
     products_df = products_df.copy()
 
     # Drop zona_id y region_id de products_df si existen
-    if "zone_id" in products_df.columns:
-        products_df = products_df.drop(columns=["zone_id"])
-    if "region_id" in products_df.columns:
-        products_df = products_df.drop(columns=["region_id"])
+    if "zone_id" in customers_df.columns:
+        customers_df = customers_df.drop(columns=["zone_id"])
+    if "region_id" in customers_df.columns:
+        customers_df = customers_df.drop(columns=["region_id"])
 
     # Get unique customers and products from existing data (maintain same universe)
     unique_customers = existing_data["customer_id"].unique()
@@ -415,7 +415,7 @@ def run_preprocessing_pipeline(
     )
 
     if use_incremental:
-        print("\n🔄 Using INCREMENTAL update mode...")
+        print("\n Using INCREMENTAL update mode...")
         final_data = join_data_incremental(
             new_transactions_df=data_frames["transacciones.parquet"],
             existing_data_path=existing_data_path,

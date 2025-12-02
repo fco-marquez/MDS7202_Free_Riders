@@ -85,29 +85,42 @@ def load_train_val_data(
         sample_frac = TRAIN_SAMPLE_FRAC
 
     print(f"Loading training data from: {train_path}")
-    # Read only needed columns to save memory
     train_df = pd.read_parquet(train_path)
     original_size = len(train_df)
-
-    # ✅ MUESTREAR para reducir memoria durante desarrollo
-    if sample_frac < 1.0:
-        print(
-            f"Sampling {sample_frac*100}% of training data (from {original_size:,} samples)..."
-        )
-        train_df = train_df.sample(frac=sample_frac, random_state=42)
     print(f"Loaded {len(train_df):,} training samples")
 
     print(f"\nLoading validation data from: {val_path}")
     val_df = pd.read_parquet(val_path)
     original_val_size = len(val_df)
-
-    # Also sample validation to reduce memory
-    if VAL_SAMPLE_FRAC < 1.0:
-        print(
-            f"Sampling {VAL_SAMPLE_FRAC*100}% of validation data (from {original_val_size:,} samples)..."
-        )
-        val_df = val_df.sample(frac=VAL_SAMPLE_FRAC, random_state=42)
     print(f"Loaded {len(val_df):,} validation samples")
+
+    # =========================================================================
+    # STRATIFIED SAMPLING: Keep ALL positives, sample negatives
+    # This is crucial for imbalanced data - random sampling loses signal!
+    # =========================================================================
+    if sample_frac < 1.0:
+        print(f"\n📊 Applying STRATIFIED sampling (keeping all positives)...")
+
+        # Training set
+        train_positives = train_df[train_df["bought"] == 1]
+        train_negatives = train_df[train_df["bought"] == 0]
+        n_neg_to_keep = int(len(train_negatives) * sample_frac)
+        train_negatives_sampled = train_negatives.sample(n=n_neg_to_keep, random_state=42)
+        train_df = pd.concat([train_positives, train_negatives_sampled], ignore_index=True)
+        print(f"  Training: kept all {len(train_positives):,} positives + {n_neg_to_keep:,} negatives = {len(train_df):,} total")
+
+        # Validation set
+        val_positives = val_df[val_df["bought"] == 1]
+        val_negatives = val_df[val_df["bought"] == 0]
+        n_val_neg_to_keep = int(len(val_negatives) * VAL_SAMPLE_FRAC)
+        val_negatives_sampled = val_negatives.sample(n=n_val_neg_to_keep, random_state=42)
+        val_df = pd.concat([val_positives, val_negatives_sampled], ignore_index=True)
+        print(f"  Validation: kept all {len(val_positives):,} positives + {n_val_neg_to_keep:,} negatives = {len(val_df):,} total")
+
+        # Clean up
+        del train_positives, train_negatives, train_negatives_sampled
+        del val_positives, val_negatives, val_negatives_sampled
+        gc.collect()
 
     # Separate features and target
     X_train = train_df.drop(columns=["bought"])
@@ -116,8 +129,8 @@ def load_train_val_data(
     X_val = val_df.drop(columns=["bought"])
     y_val = val_df["bought"]
 
-    # Print initial class distribution
-    print("\nInitial class distribution in training set:")
+    # Print class distribution
+    print("\nClass distribution in training set:")
     print(y_train.value_counts())
 
     n_positive = (y_train == 1).sum()
