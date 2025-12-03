@@ -55,10 +55,12 @@ from mlflow_config import (
 from pipeline import create_pipeline
 
 # Configuration from environment
-TRAIN_SAMPLE_FRAC = float(os.getenv("TRAIN_SAMPLE_FRAC", "0.2"))
+# ✅ INCREASED: Use 60% of training data instead of 20% for better learning
+TRAIN_SAMPLE_FRAC = float(os.getenv("TRAIN_SAMPLE_FRAC", "0.6"))
 VAL_SAMPLE_FRAC = float(os.getenv("VAL_SAMPLE_FRAC", "0.3"))
 SHAP_SAMPLE_SIZE = int(os.getenv("SHAP_SAMPLE_SIZE", "500"))
-IMBALANCE_RATIO_THRESHOLD = float(os.getenv("IMBALANCE_RATIO_THRESHOLD", "8"))
+# ✅ INCREASED: Allow higher imbalance ratio (15:1 instead of 8:1) to keep more data
+IMBALANCE_RATIO_THRESHOLD = float(os.getenv("IMBALANCE_RATIO_THRESHOLD", "15"))
 N_JOBS = int(os.getenv("N_JOBS", "-1"))
 
 
@@ -105,17 +107,27 @@ def load_train_val_data(
         train_positives = train_df[train_df["bought"] == 1]
         train_negatives = train_df[train_df["bought"] == 0]
         n_neg_to_keep = int(len(train_negatives) * sample_frac)
-        train_negatives_sampled = train_negatives.sample(n=n_neg_to_keep, random_state=42)
-        train_df = pd.concat([train_positives, train_negatives_sampled], ignore_index=True)
-        print(f"  Training: kept all {len(train_positives):,} positives + {n_neg_to_keep:,} negatives = {len(train_df):,} total")
+        train_negatives_sampled = train_negatives.sample(
+            n=n_neg_to_keep, random_state=42
+        )
+        train_df = pd.concat(
+            [train_positives, train_negatives_sampled], ignore_index=True
+        )
+        print(
+            f"  Training: kept all {len(train_positives):,} positives + {n_neg_to_keep:,} negatives = {len(train_df):,} total"
+        )
 
         # Validation set
         val_positives = val_df[val_df["bought"] == 1]
         val_negatives = val_df[val_df["bought"] == 0]
         n_val_neg_to_keep = int(len(val_negatives) * VAL_SAMPLE_FRAC)
-        val_negatives_sampled = val_negatives.sample(n=n_val_neg_to_keep, random_state=42)
+        val_negatives_sampled = val_negatives.sample(
+            n=n_val_neg_to_keep, random_state=42
+        )
         val_df = pd.concat([val_positives, val_negatives_sampled], ignore_index=True)
-        print(f"  Validation: kept all {len(val_positives):,} positives + {n_val_neg_to_keep:,} negatives = {len(val_df):,} total")
+        print(
+            f"  Validation: kept all {len(val_positives):,} positives + {n_val_neg_to_keep:,} negatives = {len(val_df):,} total"
+        )
 
         # Clean up
         del train_positives, train_negatives, train_negatives_sampled
@@ -266,7 +278,9 @@ def optimize_hyperparameters(
     print("\nFitting preprocessing pipeline...")
     X_train_with_target = X_train.copy()
     X_train_with_target["bought"] = y_train.values
-    X_train_processed = preprocessing_pipeline.fit_transform(X_train_with_target, y_train)
+    X_train_processed = preprocessing_pipeline.fit_transform(
+        X_train_with_target, y_train
+    )
     del X_train_with_target
     gc.collect()
 
@@ -282,28 +296,35 @@ def optimize_hyperparameters(
 
     # Objective function for Optuna
     def objective(trial):
-        # Suggest hyperparameters - OPTIMIZED GRID (only most important params)
-        scale_pos_weight = IMBALANCE_RATIO_THRESHOLD
+        # Suggest hyperparameters - EXPANDED GRID for better model capacity
+        # ✅ FIXED: Use calculated scale_pos_weight instead of fixed threshold
         n_jobs = N_JOBS
 
         params = {
             # --- Parámetros Fijos (Eficiencia y Entorno) ---
             "objective": "binary:logistic",
             "eval_metric": "aucpr",
-            "scale_pos_weight": scale_pos_weight,
+            "scale_pos_weight": scale_pos_weight,  # ✅ Uses value calculated from data
             "tree_method": "hist",
             "random_state": 42,
             # Adjust to the resources of your Docker container.
             # Avoid using -1 to prevent CPU overhead in limited containers.
             "n_jobs": n_jobs,
-            "max_depth": trial.suggest_int("max_depth", 3, 6),
-            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.1, log=True),
-            "min_child_weight": trial.suggest_int("min_child_weight", 1, 7),
-            "subsample": trial.suggest_float("subsample", 0.6, 0.9),
-            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 0.9),
-            "gamma": 1.0,
-            "reg_alpha": 0.5,
-            "reg_lambda": 1.0,  # L2 default
+            # ✅ EXPANDED: Deeper trees (5-10 instead of 3-6)
+            "max_depth": trial.suggest_int("max_depth", 5, 10),
+            # ✅ EXPANDED: Higher learning rates (up to 0.3 instead of 0.1)
+            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
+            # ✅ EXPANDED: Less restrictive (1-5 instead of 1-7)
+            "min_child_weight": trial.suggest_int("min_child_weight", 1, 5),
+            # ✅ EXPANDED: Allow full sampling (up to 1.0 instead of 0.9)
+            "subsample": trial.suggest_float("subsample", 0.6, 1.0),
+            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 1.0),
+            # ✅ TUNABLE: Gamma now tunable instead of fixed at 1.0
+            "gamma": trial.suggest_float("gamma", 0, 2),
+            # ✅ TUNABLE: L1 regularization now tunable instead of fixed at 0.5
+            "reg_alpha": trial.suggest_float("reg_alpha", 0, 1),
+            # ✅ TUNABLE: L2 regularization now tunable instead of fixed at 1.0
+            "reg_lambda": trial.suggest_float("reg_lambda", 0.5, 2),
         }
 
         # Start MLflow run
@@ -324,12 +345,23 @@ def optimize_hyperparameters(
             f1 = f1_score(y_val, y_pred, zero_division=0)
             auc_pr = average_precision_score(y_val, y_pred_proba)
 
+            # ✅ F2-score: Weighted F-score that prioritizes recall over precision
+            # Beta=2 means recall is 2x more important than precision
+            # This helps detect more positive cases (bought=1) even if precision drops slightly
+            beta = 2
+            f2 = (
+                ((1 + beta**2) * precision * recall / (beta**2 * precision + recall))
+                if (precision + recall) > 0
+                else 0
+            )
+
             # Log parameters and metrics
             mlflow.log_params(params)
             metrics = {
                 "val_recall": recall,
                 "val_precision": precision,
                 "val_f1": f1,
+                "val_f2": f2,  # ✅ Log F2-score
                 "val_auc_pr": auc_pr,
             }
             log_metrics_from_dict(metrics)
@@ -338,8 +370,8 @@ def optimize_hyperparameters(
             del model
             gc.collect()
 
-            # Optuna optimizes for f1 (primary metric)
-            return f1
+            # ✅ Optuna optimizes for F2-score (prioritizes recall for imbalanced data)
+            return f2
 
     # Create Optuna study
     study = optuna.create_study(
@@ -359,14 +391,14 @@ def optimize_hyperparameters(
         print("OPTIMIZATION RESULTS")
         print("=" * 60)
         print(f"Best trial: {study.best_trial.number}")
-        print(f"Best f1: {study.best_value:.4f}")
+        print(f"Best F2-score: {study.best_value:.4f}")  # ✅ Changed from f1 to F2
         print("\nBest hyperparameters:")
         for key, value in study.best_params.items():
             print(f"  {key}: {value}")
 
         # Log best params
         mlflow.log_params(study.best_params)
-        mlflow.log_metric("best_recall", study.best_value)
+        mlflow.log_metric("best_f2", study.best_value)  # ✅ Changed from recall to f2
 
         # Generate and log Optuna visualizations
         print("\nGenerating Optuna visualization plots...")

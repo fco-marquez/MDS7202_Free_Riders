@@ -19,7 +19,6 @@ import os
 import shutil
 from pathlib import Path
 
-from airflow import DAG
 from airflow.operators.empty import EmptyOperator
 from airflow.operators.python import BranchPythonOperator, PythonOperator
 from airflow.sensors.filesystem import FileSensor
@@ -31,6 +30,8 @@ from load_and_preprocess import run_preprocessing_pipeline
 from pipeline import run_data_splitting
 from predict_module import run_prediction_pipeline
 from train_module import run_full_training
+
+from airflow import DAG
 
 # ============================================================================
 # CONFIGURATION
@@ -47,7 +48,14 @@ DRIFT_REPORTS_DIR = BASE_DIR / "drift_reports"
 MODELS_DIR = BASE_DIR / "models"
 
 # Create directories
-for directory in [INCOMING_DATA_DIR, RAW_DATA_DIR, PROCESSED_DATA_DIR, PREDICTIONS_DIR, DRIFT_REPORTS_DIR, MODELS_DIR]:
+for directory in [
+    INCOMING_DATA_DIR,
+    RAW_DATA_DIR,
+    PROCESSED_DATA_DIR,
+    PREDICTIONS_DIR,
+    DRIFT_REPORTS_DIR,
+    MODELS_DIR,
+]:
     directory.mkdir(parents=True, exist_ok=True)
 
 # File paths
@@ -71,7 +79,9 @@ MLFLOW_EXPERIMENT = os.getenv("MLFLOW_EXPERIMENT_NAME", "sodai_drinks_prediction
 DRIFT_THRESHOLD = float(os.getenv("DRIFT_THRESHOLD", "0.3"))
 
 # Prediction threshold for CodaLab (probability >= this value = predicted purchase)
-PREDICTION_THRESHOLD = float(os.getenv("PREDICTION_THRESHOLD", "0.112"))
+# 🎯 Optimized: 0.067 generates ~4,486 predictions (~2.6% of universe)
+# This matches the expected positive rate and should maximize F1-score
+PREDICTION_THRESHOLD = float(os.getenv("PREDICTION_THRESHOLD", "0.067"))
 
 
 # ============================================================================
@@ -98,7 +108,9 @@ def ingest_and_preprocess(**context):
     incoming_files = list(INCOMING_DATA_DIR.glob("*.parquet"))
 
     if incoming_files:
-        print(f"\n Found {len(incoming_files)} new batch file(s) in incoming directory:")
+        print(
+            f"\n Found {len(incoming_files)} new batch file(s) in incoming directory:"
+        )
         for src in incoming_files:
             try:
                 dest = RAW_DATA_DIR / src.name
@@ -334,7 +346,9 @@ def convert_predictions_to_csv(**context):
     import pandas as pd
 
     execution_date = context["ds"]
-    predictions_parquet_path = str(PREDICTIONS_PATH).format(execution_date=execution_date)
+    predictions_parquet_path = str(PREDICTIONS_PATH).format(
+        execution_date=execution_date
+    )
     csv_output_path = str(CODALAB_CSV_PATH).format(execution_date=execution_date)
 
     print("=" * 60)
@@ -354,14 +368,26 @@ def convert_predictions_to_csv(**context):
     print(f"  Max: {preds['probability'].max():.4f}")
     print(f"  Mean: {preds['probability'].mean():.4f}")
     print(f"  Median: {preds['probability'].median():.4f}")
+    print(f"  25th percentile: {preds['probability'].quantile(0.25):.4f}")
+    print(f"  75th percentile: {preds['probability'].quantile(0.75):.4f}")
+    print(f"  95th percentile: {preds['probability'].quantile(0.95):.4f}")
+
+    # Show how many would be selected at different thresholds
+    print(f"\nPredictions at different thresholds:")
+    for thresh in [0.01, 0.05, 0.10, 0.15, 0.20, 0.30]:
+        count = (preds["probability"] >= thresh).sum()
+        pct = 100 * count / len(preds)
+        print(f"  >= {thresh:.2f}: {count:,} ({pct:.1f}%)")
 
     # Filter by threshold
-    print(f"\nApplying threshold: {PREDICTION_THRESHOLD}")
-    positive_preds = preds[preds['probability'] >= PREDICTION_THRESHOLD][['customer_id', 'product_id']]
+    print(f"\n✓ Applying threshold: {PREDICTION_THRESHOLD}")
+    positive_preds = preds[preds["probability"] >= PREDICTION_THRESHOLD][
+        ["customer_id", "product_id"]
+    ]
 
     # Ensure integer types for IDs
-    positive_preds['customer_id'] = positive_preds['customer_id'].astype(int)
-    positive_preds['product_id'] = positive_preds['product_id'].astype(int)
+    positive_preds["customer_id"] = positive_preds["customer_id"].astype(int)
+    positive_preds["product_id"] = positive_preds["product_id"].astype(int)
 
     # Save to CSV
     positive_preds.to_csv(csv_output_path, index=False)
