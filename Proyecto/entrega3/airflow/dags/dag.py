@@ -239,8 +239,6 @@ def detect_drift_and_decide(**context):
     # New data arrived: check for drift
     if not FINAL_DATA_PATH.exists():
         print("\nFinal data not found → RETRAIN")
-        # Update reference data
-        shutil.copyfile(CURRENT_DATA_PATH, CURRENT_DATA_PATH)
         print("=" * 60)
         return "split_and_train"
 

@@ -370,8 +370,8 @@ def optimize_hyperparameters(
             del model
             gc.collect()
 
-            # ✅ Optuna optimizes for F2-score (prioritizes recall for imbalanced data)
-            return f2
+            # Optuna optimizes for F1-score (balanced precision and recall)
+            return f1
 
     # Create Optuna study
     study = optuna.create_study(
@@ -424,6 +424,14 @@ def optimize_hyperparameters(
 
     # Add fixed parameters to best params
     best_params = study.best_params.copy()
+    best_params.update({
+        "objective": "binary:logistic",
+        "eval_metric": "aucpr",
+        "scale_pos_weight": scale_pos_weight,
+        "tree_method": "hist",
+        "random_state": 42,
+        "n_jobs": N_JOBS,
+    })
 
     return best_params
 
